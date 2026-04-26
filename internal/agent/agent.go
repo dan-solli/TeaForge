@@ -8,7 +8,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -417,16 +416,3 @@ func (t *indexDirectoryTool) Execute(ctx context.Context, params map[string]any)
 	return tools.Result{Output: fmt.Sprintf("Indexed %d files in %s", len(files), path)}
 }
 
-// -------------------------------------------------------------------
-// JSON helper (for serialising tool call arguments in event content)
-// -------------------------------------------------------------------
-
-func marshalArgs(args map[string]any) string {
-	b, err := json.Marshal(args)
-	if err != nil {
-		return fmt.Sprintf("%v", args)
-	}
-	return string(b)
-}
-
-var _ = marshalArgs // used in formatted Event output when needed

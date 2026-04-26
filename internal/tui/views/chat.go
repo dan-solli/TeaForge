@@ -225,16 +225,16 @@ func (c *ChatView) renderEntry(e ChatEntry) string {
 		maxWidth = 80
 	}
 
-	// Wrap content lines
+	// Wrap content lines using rune-aware splitting to avoid breaking UTF-8
+	// characters at byte boundaries.
 	var lines []string
 	for _, line := range strings.Split(content, "\n") {
-		if len(line) > maxWidth {
-			for len(line) > maxWidth {
-				lines = append(lines, line[:maxWidth])
-				line = line[maxWidth:]
-			}
+		runes := []rune(line)
+		for len(runes) > maxWidth {
+			lines = append(lines, string(runes[:maxWidth]))
+			runes = runes[maxWidth:]
 		}
-		lines = append(lines, line)
+		lines = append(lines, string(runes))
 	}
 
 	return header + "\n  " + strings.Join(lines, "\n  ") + "\n"
