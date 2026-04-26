@@ -34,5 +34,5 @@ go.work.sum
 # TeaForge runtime data
 .teaforge/
 
-# Built binary
-teaforge
+# Built binary (root-level only)
+/teaforge
