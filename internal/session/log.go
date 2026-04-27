@@ -15,11 +15,13 @@ package session
 //	  "model":       "gemma4:26b",
 //	  "work_dir":    "/path/to/project",
 //	  "turns": [
-//	    {"seq":1, "role":"system",    "content":"...", "timestamp":"..."},
-//	    {"seq":2, "role":"user",      "content":"...", "timestamp":"..."},
-//	    {"seq":3, "role":"assistant", "content":"...", "timestamp":"..."},
-//	    {"seq":4, "role":"tool_call", "content":"tool_name: {args}", "timestamp":"..."},
-//	    {"seq":5, "role":"tool",      "content":"...", "timestamp":"..."}
+//	    {"seq":1, "role":"prompt_snapshot", "content":"[...]", "timestamp":"..."},
+//	    {"seq":2, "role":"system",    "content":"...", "timestamp":"..."},
+//	    {"seq":3, "role":"summary",   "content":"...", "timestamp":"..."},
+//	    {"seq":4, "role":"user",      "content":"...", "timestamp":"..."},
+//	    {"seq":5, "role":"assistant", "content":"...", "timestamp":"..."},
+//	    {"seq":6, "role":"tool_call", "content":"tool_name: {args}", "timestamp":"..."},
+//	    {"seq":7, "role":"tool",      "content":"...", "timestamp":"..."}
 //	  ]
 //	}
 //
@@ -33,6 +35,17 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+)
+
+// Standard role names used in session logs.
+const (
+	RoleSystem         = "system"
+	RoleUser           = "user"
+	RoleAssistant      = "assistant"
+	RoleToolCall       = "tool_call"
+	RoleTool           = "tool"
+	RolePromptSnapshot = "prompt_snapshot"
+	RoleSummary        = "summary"
 )
 
 // Turn is one entry in the conversation transcript.
@@ -83,6 +96,20 @@ func New(dir, model, workDir string) (*Log, error) {
 		return nil, err
 	}
 	return l, nil
+}
+
+// LoadFromFile loads a previously persisted session log from path.
+func LoadFromFile(path string) (*Log, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("session: reading log: %w", err)
+	}
+	var l Log
+	if err := json.Unmarshal(data, &l); err != nil {
+		return nil, fmt.Errorf("session: unmarshalling log: %w", err)
+	}
+	l.path = path
+	return &l, nil
 }
 
 // Append adds a turn to the log and persists it to disk.

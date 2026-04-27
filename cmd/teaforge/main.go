@@ -6,18 +6,50 @@
 package main
 
 import (
+	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/dan-solli/teaforge/internal/agent"
 	"github.com/dan-solli/teaforge/internal/tui"
 )
 
+type teaProgram interface {
+	Run() (tea.Model, error)
+}
+
+var newAgent = agent.New
+var getwd = os.Getwd
+var newProgram = func(app tui.App) teaProgram {
+	return tea.NewProgram(
+		app,
+		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
+	)
+}
+
 func main() {
+	os.Exit(run(os.Args[1:], os.Stderr))
+}
+
+func run(args []string, stderr io.Writer) int {
+	fs := flag.NewFlagSet("teaforge", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	resumeID := fs.String("resume", "", "Resume a prior session by ID (filename without .json)")
+	resumeLatest := fs.Bool("resume-latest", false, "Resume the most recent session")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(stderr, "teaforge: %v\n", err)
+		return 2
+	}
+
 	// Determine working directory
-	workDir, err := os.Getwd()
+	workDir, err := getwd()
 	if err != nil {
 		workDir = "."
 	}
@@ -33,27 +65,41 @@ func main() {
 		WorkDir:     workDir,
 		MemoryFile:  memoryFile,
 		SessionsDir: sessionsDir,
+		NumCtx:      numCtxFromEnv(),
 	}
 
 	// Create the agent
-	ag, err := agent.New(cfg)
+	ag, err := newAgent(cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "teaforge: failed to initialise agent: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "teaforge: failed to initialise agent: %v\n", err)
+		return 1
+	}
+
+	if *resumeID != "" && *resumeLatest {
+		fmt.Fprintln(stderr, "teaforge: --resume and --resume-latest are mutually exclusive")
+		return 1
+	}
+	if *resumeID != "" || *resumeLatest {
+		path, err := resolveResumePath(sessionsDir, *resumeID, *resumeLatest)
+		if err != nil {
+			fmt.Fprintf(stderr, "teaforge: %v\n", err)
+			return 1
+		}
+		if err := ag.ResumeFromLog(path); err != nil {
+			fmt.Fprintf(stderr, "teaforge: resume failed: %v\n", err)
+			return 1
+		}
 	}
 
 	// Create and run the Bubble Tea program
 	app := tui.NewApp(cfg, ag)
-	p := tea.NewProgram(
-		app,
-		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
-	)
+	p := newProgram(app)
 
 	if _, err := p.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "teaforge: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "teaforge: %v\n", err)
+		return 1
 	}
+	return 0
 }
 
 // modelFromEnv returns the Ollama model name, falling back to a sensible
@@ -72,4 +118,60 @@ func ollamaURLFromEnv() string {
 		return h
 	}
 	return "http://localhost:11434"
+}
+
+// numCtxFromEnv returns the context window token budget.
+// It defaults to 8192 when TEAFORGE_NUM_CTX is unset or invalid.
+func numCtxFromEnv() int {
+	raw := os.Getenv("TEAFORGE_NUM_CTX")
+	if raw == "" {
+		return 8192
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 8192
+	}
+	return n
+}
+
+func resolveResumePath(sessionsDir, id string, latest bool) (string, error) {
+	if latest {
+		return latestSessionPath(sessionsDir)
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "", fmt.Errorf("empty resume id")
+	}
+	if filepath.IsAbs(id) {
+		return id, nil
+	}
+	if filepath.Ext(id) != ".json" {
+		id += ".json"
+	}
+	path := filepath.Join(sessionsDir, id)
+	if _, err := os.Stat(path); err != nil {
+		return "", fmt.Errorf("resume session not found: %s", path)
+	}
+	return path, nil
+}
+
+func latestSessionPath(sessionsDir string) (string, error) {
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		return "", fmt.Errorf("reading sessions dir: %w", err)
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if filepath.Ext(e.Name()) == ".json" {
+			names = append(names, e.Name())
+		}
+	}
+	if len(names) == 0 {
+		return "", fmt.Errorf("no session logs found in %s", sessionsDir)
+	}
+	sort.Strings(names)
+	return filepath.Join(sessionsDir, names[len(names)-1]), nil
 }

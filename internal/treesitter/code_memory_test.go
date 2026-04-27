@@ -175,6 +175,36 @@ func Beta() {}
 	}
 }
 
+func TestCodeMemory_IndexJavaScriptFile(t *testing.T) {
+	src := `import fs from "fs"
+
+class Greeter {
+  greet(name) { return "hi " + name }
+}
+
+function helper() { return 1 }
+
+const version = "1.0"
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.js")
+	os.WriteFile(path, []byte(src), 0o644) //nolint:errcheck
+
+	cm := treesitter.NewCodeMemory()
+	if err := cm.IndexFile(context.Background(), path); err != nil {
+		t.Fatalf("IndexFile: %v", err)
+	}
+	fi := cm.FileIndex(path)
+	if fi == nil {
+		t.Fatal("expected file index")
+	}
+	if fi.Language != "javascript" {
+		t.Fatalf("language=%q", fi.Language)
+	}
+	assertSymbol(t, fi.Symbols, "type", "Greeter")
+	assertSymbol(t, fi.Symbols, "function", "helper")
+}
+
 // assertSymbol checks that symbols contains at least one entry with the given
 // kind and name.
 func assertSymbol(t *testing.T, symbols []treesitter.Symbol, kind, name string) {

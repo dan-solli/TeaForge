@@ -42,7 +42,7 @@ type ChatView struct {
 // NewChatView creates and initialises a ChatView.
 func NewChatView() ChatView {
 	ta := textarea.New()
-	ta.Placeholder = "Type your message... (Enter to send, Ctrl+S to submit multi-line)"
+	ta.Placeholder = "Type your message... (Enter to send, Ctrl+S multi-line, @path to attach)"
 	ta.Focus()
 	ta.CharLimit = 4096
 	ta.ShowLineNumbers = false

@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -71,7 +73,8 @@ type keyMap struct {
 	Toggle     key.Binding
 	NextTab    key.Binding
 	PrevTab    key.Binding
-	Refresh    key.Binding
+	Resume     key.Binding
+	Reindex    key.Binding
 	NewSession key.Binding
 }
 
@@ -87,7 +90,8 @@ var defaultKeys = keyMap{
 	Toggle:     key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "select")),
 	NextTab:    key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next tab")),
 	PrevTab:    key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "prev tab")),
-	Refresh:    key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "refresh")),
+	Resume:     key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "resume")),
+	Reindex:    key.NewBinding(key.WithKeys("ctrl+shift+r"), key.WithHelp("ctrl+shift+r", "reindex")),
 	NewSession: key.NewBinding(key.WithKeys("ctrl+n"), key.WithHelp("ctrl+n", "new session")),
 }
 
@@ -97,24 +101,29 @@ var defaultKeys = keyMap{
 
 // App is the root Bubble Tea model for TeaForge.
 type App struct {
-	keys        keyMap
-	width       int
-	height      int
-	activeView  viewID
-	ag          *agent.Agent
-	cfg         agent.Config
-	chatView    views.ChatView
-	filesView   views.FilesView
-	memoryView  views.MemoryView
-	sp          spinner.Model
-	searchInput textinput.Model
-	searchMode  bool
-	models      []string
-	modelCursor int
-	statusMsg   string
-	thinking    bool
-	agentCancel context.CancelFunc
-	agentEvents chan agent.Event
+	keys              keyMap
+	width             int
+	height            int
+	activeView        viewID
+	ag                *agent.Agent
+	cfg               agent.Config
+	chatView          views.ChatView
+	filesView         views.FilesView
+	memoryView        views.MemoryView
+	sp                spinner.Model
+	searchInput       textinput.Model
+	searchMode        bool
+	models            []string
+	modelCursor       int
+	statusMsg         string
+	thinking          bool
+	agentCancel       context.CancelFunc
+	agentEvents       chan agent.Event
+	sessionPickerOpen bool
+	sessionFiles      []string
+	sessionCursor     int
+	// files selected in Files view to be attached to the next user turn
+	pendingAttachments []string
 	// accumulates the current assistant response while streaming
 	currentResponse *strings.Builder
 }
@@ -262,6 +271,41 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (a App) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+	if a.sessionPickerOpen {
+		switch {
+		case key.Matches(msg, a.keys.Quit):
+			if a.agentCancel != nil {
+				a.agentCancel()
+			}
+			return a, tea.Quit
+		case msg.String() == "esc":
+			a.sessionPickerOpen = false
+			return a, nil
+		case key.Matches(msg, a.keys.Up):
+			if a.sessionCursor > 0 {
+				a.sessionCursor--
+			}
+			return a, nil
+		case key.Matches(msg, a.keys.Down):
+			if a.sessionCursor < len(a.sessionFiles)-1 {
+				a.sessionCursor++
+			}
+			return a, nil
+		case key.Matches(msg, a.keys.Toggle):
+			if err := a.resumeSelectedSession(); err != nil {
+				a.statusMsg = "Resume error: " + err.Error()
+			} else {
+				a.statusMsg = "Session resumed"
+			}
+			a.sessionPickerOpen = false
+			a.activeView = viewChat
+			a.chatView.FocusTextarea()
+			return a, nil
+		default:
+			return a, nil
+		}
+	}
+
 	switch {
 	case key.Matches(msg, a.keys.Quit):
 		if a.agentCancel != nil {
@@ -286,8 +330,9 @@ func (a App) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.chatView.BlurTextarea()
 
 	case key.Matches(msg, a.keys.NewSession):
-		a.ag.Session().Clear()
+		a.ag.ResetSession()
 		a.chatView = views.NewChatView()
+		a.pendingAttachments = nil
 		a.updateSizes()
 		a.statusMsg = "New session started"
 
@@ -295,8 +340,9 @@ func (a App) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if a.activeView == viewChat && !a.thinking {
 			text := strings.TrimSpace(a.chatView.TextareaValue())
 			if text != "" {
+				attachments := a.consumePendingAttachments()
 				a.chatView.ClearTextarea()
-				cmd := a.startAgentRun(text)
+				cmd := a.startAgentRun(text, attachments)
 				if cmd != nil {
 					cmds = append(cmds, cmd)
 				}
@@ -332,12 +378,10 @@ func (a App) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case viewFiles:
 			path := a.filesView.Toggle()
 			if path != "" {
+				a.addPendingAttachment(path)
 				a.activeView = viewChat
 				a.chatView.FocusTextarea()
-				cmd := a.startAgentRun(fmt.Sprintf("Please read and summarise the file: %s", path))
-				if cmd != nil {
-					cmds = append(cmds, cmd)
-				}
+				a.statusMsg = fmt.Sprintf("Attached file for next turn: %s", path)
 			}
 		case viewModels:
 			if a.modelCursor < len(a.models) {
@@ -347,8 +391,9 @@ func (a App) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case viewChat:
 			text := strings.TrimSpace(a.chatView.TextareaValue())
 			if text != "" && !strings.Contains(text, "\n") && !a.thinking {
+				attachments := a.consumePendingAttachments()
 				a.chatView.ClearTextarea()
-				cmd := a.startAgentRun(text)
+				cmd := a.startAgentRun(text, attachments)
 				if cmd != nil {
 					cmds = append(cmds, cmd)
 				}
@@ -365,7 +410,12 @@ func (a App) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.memoryView.PrevTab()
 		}
 
-	case key.Matches(msg, a.keys.Refresh):
+	case key.Matches(msg, a.keys.Resume):
+		if err := a.openSessionPicker(); err != nil {
+			a.statusMsg = "Resume error: " + err.Error()
+		}
+
+	case key.Matches(msg, a.keys.Reindex):
 		cmds = append(cmds, indexWorkDirCmd(a.ag))
 
 	default:
@@ -412,13 +462,16 @@ func (a App) updateSearchMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // startAgentRun kicks off the agent loop for userMsg. It returns a Cmd
 // that reads the first event from the agent channel.
-func (a *App) startAgentRun(userMsg string) tea.Cmd {
+func (a *App) startAgentRun(userMsg string, attachments []string) tea.Cmd {
 	if a.thinking {
 		return nil
 	}
 	a.thinking = true
 	a.chatView.SetThinking(true)
 	a.chatView.AddEntry("user", userMsg)
+	if len(attachments) > 0 {
+		a.chatView.AddToolEvent("tool_call", fmt.Sprintf("attaching %d file(s)", len(attachments)))
+	}
 	a.currentResponse.Reset()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -427,7 +480,7 @@ func (a *App) startAgentRun(userMsg string) tea.Cmd {
 	events := make(chan agent.Event, 64)
 	a.agentEvents = events
 
-	go a.ag.Run(ctx, userMsg, events)
+	go a.ag.Run(ctx, userMsg, attachments, events)
 
 	return waitForAgentEvent(events)
 }
@@ -457,6 +510,9 @@ func (a *App) handleAgentEvent(ev agent.Event) tea.Cmd {
 
 	case agent.EventToolResult:
 		a.chatView.AddToolEvent("tool_result", ev.Content)
+
+	case agent.EventContext:
+		a.statusMsg = fmt.Sprintf("Context %s • model: %s", ev.Content, a.cfg.Model)
 
 	case agent.EventDone:
 		a.thinking = false
@@ -553,10 +609,24 @@ func (a App) renderBody() string {
 	if bodyH < 1 {
 		bodyH = 1
 	}
+	if a.sessionPickerOpen {
+		return a.renderSessionPicker(bodyH)
+	}
 
 	switch a.activeView {
 	case viewChat:
-		return a.chatView.View()
+		chat := a.chatView.View()
+		if len(a.pendingAttachments) == 0 {
+			return chat
+		}
+		lines := []string{styles.MutedText.Render("Next turn attachments:")}
+		for _, p := range a.pendingAttachments {
+			lines = append(lines, "- "+styles.AILabel.Render(p))
+		}
+		attachments := styles.Panel.
+			Width(a.width - 2).
+			Render(strings.Join(lines, "\n"))
+		return lipgloss.JoinVertical(lipgloss.Left, chat, attachments)
 	case viewFiles:
 		return a.filesView.View()
 	case viewMemory:
@@ -571,6 +641,32 @@ func (a App) renderBody() string {
 		return a.renderModelsView(bodyH)
 	}
 	return ""
+}
+
+func (a App) renderSessionPicker(h int) string {
+	_ = h
+	lines := []string{
+		styles.AILabel.Render(fmt.Sprintf("Resume Session (%d)", len(a.sessionFiles))),
+		styles.MutedText.Render("Enter: resume  Esc: cancel"),
+		"",
+	}
+	if len(a.sessionFiles) == 0 {
+		lines = append(lines, styles.ErrorText.Render("No sessions found."))
+	} else {
+		for i, p := range a.sessionFiles {
+			name := strings.TrimSuffix(filepath.Base(p), ".json")
+			line := "  " + name
+			if i == a.sessionCursor {
+				line = styles.ListItemSelected.Render(line)
+			}
+			lines = append(lines, line)
+		}
+	}
+	content := strings.Join(lines, "\n")
+	return styles.Panel.
+		Width(a.width - 2).
+		Height(a.height - 6).
+		Render(content)
 }
 
 func (a App) renderModelsView(h int) string {
@@ -604,21 +700,38 @@ func (a App) renderModelsView(h int) string {
 }
 
 func (a App) renderStatusBar() string {
+	if a.sessionPickerOpen {
+		status := styles.StatusBar.Render("Select a session to resume")
+		help := styles.StatusKey.Render("↑↓") + " navigate  " +
+			styles.StatusKey.Render("enter") + " resume  " +
+			styles.StatusKey.Render("esc") + " cancel"
+		gap := a.width - lipgloss.Width(status) - lipgloss.Width(help)
+		if gap < 0 {
+			gap = 0
+		}
+		return lipgloss.JoinHorizontal(lipgloss.Top,
+			status,
+			strings.Repeat(" ", gap),
+			help,
+		)
+	}
+
 	status := styles.StatusBar.Render(a.statusMsg)
 	var help string
 	switch a.activeView {
 	case viewChat:
 		help = styles.StatusKey.Render("ctrl+s") + " send  " +
+			styles.StatusKey.Render("ctrl+r") + " resume  " +
 			styles.StatusKey.Render("ctrl+n") + " new session  " +
 			styles.StatusKey.Render("ctrl+c") + " quit"
 	case viewFiles:
 		help = styles.StatusKey.Render("↑↓") + " navigate  " +
-			styles.StatusKey.Render("enter") + " open  " +
+			styles.StatusKey.Render("enter") + " attach  " +
 			styles.StatusKey.Render("ctrl+c") + " quit"
 	case viewMemory:
 		help = styles.StatusKey.Render("tab") + " next  " +
 			styles.StatusKey.Render("/") + " search  " +
-			styles.StatusKey.Render("ctrl+r") + " reindex"
+			styles.StatusKey.Render("ctrl+shift+r") + " reindex"
 	case viewModels:
 		help = styles.StatusKey.Render("↑↓") + " navigate  " +
 			styles.StatusKey.Render("enter") + " select"
@@ -635,6 +748,25 @@ func (a App) renderStatusBar() string {
 	)
 }
 
+func (a *App) addPendingAttachment(path string) {
+	for _, p := range a.pendingAttachments {
+		if p == path {
+			return
+		}
+	}
+	a.pendingAttachments = append(a.pendingAttachments, path)
+}
+
+func (a *App) consumePendingAttachments() []string {
+	if len(a.pendingAttachments) == 0 {
+		return nil
+	}
+	out := make([]string, len(a.pendingAttachments))
+	copy(out, a.pendingAttachments)
+	a.pendingAttachments = nil
+	return out
+}
+
 // -------------------------------------------------------------------
 // Size propagation
 // -------------------------------------------------------------------
@@ -647,6 +779,70 @@ func (a *App) updateSizes() {
 	a.chatView.SetSize(a.width, bodyH)
 	a.filesView.SetSize(a.width/3, bodyH)
 	a.memoryView.SetSize(a.width, bodyH)
+}
+
+func (a *App) openSessionPicker() error {
+	files, err := listSessionFiles(a.cfg.SessionsDir)
+	if err != nil {
+		return err
+	}
+	a.sessionFiles = files
+	a.sessionCursor = 0
+	a.sessionPickerOpen = true
+	return nil
+}
+
+func (a *App) resumeSelectedSession() error {
+	if len(a.sessionFiles) == 0 {
+		return fmt.Errorf("no sessions available")
+	}
+	path := a.sessionFiles[a.sessionCursor]
+	if err := a.ag.ResumeFromLog(path); err != nil {
+		return err
+	}
+	a.chatView = views.NewChatView()
+	a.pendingAttachments = nil
+	a.updateSizes()
+	a.hydrateChatFromSession()
+	a.statusMsg = fmt.Sprintf("Resumed %s", strings.TrimSuffix(filepath.Base(path), ".json"))
+	return nil
+}
+
+func (a *App) hydrateChatFromSession() {
+	for _, t := range a.ag.Session().Turns() {
+		switch t.Role {
+		case "user", "assistant":
+			a.chatView.AddEntry(t.Role, t.Content)
+		case "tool":
+			a.chatView.AddToolEvent("tool_result", t.Content)
+		}
+	}
+}
+
+func listSessionFiles(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("no sessions found")
+		}
+		return nil, err
+	}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if filepath.Ext(e.Name()) == ".json" {
+			out = append(out, filepath.Join(dir, e.Name()))
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no sessions found")
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return filepath.Base(out[i]) > filepath.Base(out[j])
+	})
+	return out, nil
 }
 
 // -------------------------------------------------------------------

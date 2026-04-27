@@ -74,3 +74,29 @@ func TestLog_NilSafe(t *testing.T) {
 		t.Errorf("nil Path should be empty")
 	}
 }
+
+func TestLoadFromFile(t *testing.T) {
+	dir := t.TempDir()
+
+	l, err := session.New(dir, "test-model", "/tmp/work")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := l.Append(session.RoleUser, "hello"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	loaded, err := session.LoadFromFile(l.Path())
+	if err != nil {
+		t.Fatalf("LoadFromFile: %v", err)
+	}
+	if loaded.Model != "test-model" {
+		t.Fatalf("model=%q want %q", loaded.Model, "test-model")
+	}
+	if len(loaded.Turns) != 1 {
+		t.Fatalf("turns=%d want 1", len(loaded.Turns))
+	}
+	if loaded.Turns[0].Role != session.RoleUser || loaded.Turns[0].Content != "hello" {
+		t.Fatalf("unexpected loaded turn: %+v", loaded.Turns[0])
+	}
+}

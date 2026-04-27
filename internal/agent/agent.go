@@ -9,10 +9,13 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/dan-solli/teaforge/internal/memory"
 	"github.com/dan-solli/teaforge/internal/ollama"
+	"github.com/dan-solli/teaforge/internal/prompt"
+	"github.com/dan-solli/teaforge/internal/prompt/guardrails"
 	sesslog "github.com/dan-solli/teaforge/internal/session"
 	"github.com/dan-solli/teaforge/internal/tools"
 	"github.com/dan-solli/teaforge/internal/treesitter"
@@ -23,6 +26,7 @@ const (
 	EventToken      = "token"       // Partial assistant text chunk
 	EventToolCall   = "tool_call"   // The model invoked a tool
 	EventToolResult = "tool_result" // A tool returned its output
+	EventContext    = "context"     // Prompt budget and compaction stats
 	EventDone       = "done"        // The agent turn is complete
 	EventError      = "error"       // An unrecoverable error occurred
 )
@@ -41,17 +45,20 @@ type Config struct {
 	MemoryFile   string // Path to project memory JSON file
 	SessionsDir  string // Directory for session logs; empty disables logging
 	SystemPrompt string
+	NumCtx       int
 }
 
 // Agent is the central orchestrator: it manages memory, tools and the LLM loop.
 type Agent struct {
-	cfg        Config
-	client     *ollama.Client
-	session    *memory.SessionMemory
-	project    *memory.ProjectMemory
-	code       *treesitter.CodeMemory
-	tools      *tools.Registry
-	sessionLog *sesslog.Log // nil when logging is disabled
+	cfg           Config
+	client        *ollama.Client
+	session       *memory.SessionMemory
+	resumeSummary string
+	project       *memory.ProjectMemory
+	code          *treesitter.CodeMemory
+	tools         *tools.Registry
+	pipeline      *prompt.Pipeline
+	sessionLog    *sesslog.Log // nil when logging is disabled
 }
 
 // New creates a new Agent with the provided configuration.
@@ -84,8 +91,15 @@ func New(cfg Config) (*Agent, error) {
 		tools:      registry,
 		sessionLog: sl,
 	}
+	a.pipeline = prompt.NewDefaultPipeline([]prompt.Guardrail{
+		guardrails.NewSnapshotGuardrail(a.AppendSessionLog),
+	})
+	a.pipeline.SetTokenBudget(cfg.NumCtx)
+	a.pipeline.SetCompactor(newLLMCompactor(client, cfg.Model, cfg.NumCtx))
 	// Register memory-aware tools
 	registry.Register(&saveNoteTool{project: project})
+	registry.Register(&recallNotesTool{project: project})
+	registry.Register(&listNoteCategoriesTool{project: project})
 	registry.Register(&searchCodeTool{code: code})
 	registry.Register(&indexDirectoryTool{code: code})
 	return a, nil
@@ -93,6 +107,12 @@ func New(cfg Config) (*Agent, error) {
 
 // Session returns the session memory (read-only usage from the TUI).
 func (a *Agent) Session() *memory.SessionMemory { return a.session }
+
+// ResetSession clears live turns and resume summary context.
+func (a *Agent) ResetSession() {
+	a.session.Clear()
+	a.resumeSummary = ""
+}
 
 // Project returns the project memory.
 func (a *Agent) Project() *memory.ProjectMemory { return a.project }
@@ -124,21 +144,53 @@ func (a *Agent) IndexWorkDir(ctx context.Context) error {
 // Run executes one user turn through the agentic loop.
 // It emits Events on the provided channel until the turn completes or fails.
 // The channel is closed when Run returns.
-func (a *Agent) Run(ctx context.Context, userMessage string, events chan<- Event) {
+func (a *Agent) Run(ctx context.Context, userMessage string, attachedPaths []string, events chan<- Event) {
 	defer close(events)
 
 	// Add the user turn to session memory
 	a.session.AddTurn(ollama.RoleUser, userMessage)
 
-	// Build messages from session history
-	messages := a.buildMessages()
+	// Build messages through the prompt pipeline.
+	messages, trace, buildErr := a.pipeline.Build(ctx, &prompt.Request{
+		SystemPrompt:    a.cfg.SystemPrompt,
+		WorkDir:         a.cfg.WorkDir,
+		Model:           a.cfg.Model,
+		UserMessage:     userMessage,
+		AttachedPaths:   attachedPaths,
+		ResumeSummary:   a.resumeSummary,
+		NumCtx:          a.cfg.NumCtx,
+		SessionTurns:    a.session.Turns(),
+		ProjectNotes:    a.project.Notes(),
+		CodeSymbolCount: len(a.code.AllSymbols()),
+	})
+	if buildErr != nil {
+		select {
+		case events <- Event{Type: EventError, Content: buildErr.Error()}:
+		case <-ctx.Done():
+		}
+		return
+	}
+	if trace != nil {
+		if trace.Summary != "" {
+			_ = a.sessionLog.Append(sesslog.RoleSummary, trace.Summary)
+		}
+		contextStats := fmt.Sprintf("%d%% (%d/%d tokens)", trace.FillPercent, trace.UsedTokens, trace.Budget.Total)
+		if trace.Compacted {
+			contextStats += " • compacted"
+		}
+		select {
+		case events <- Event{Type: EventContext, Content: contextStats}:
+		case <-ctx.Done():
+			return
+		}
+	}
 
 	// Log the system prompt (first element) and the user message.
 	// The system prompt is rebuilt each run so we record the exact version used.
 	if len(messages) > 0 && messages[0].Role == ollama.RoleSystem {
-		_ = a.sessionLog.Append("system", messages[0].Content)
+		_ = a.sessionLog.Append(sesslog.RoleSystem, messages[0].Content)
 	}
-	_ = a.sessionLog.Append(ollama.RoleUser, userMessage)
+	_ = a.sessionLog.Append(sesslog.RoleUser, userMessage)
 
 	// Build tool descriptors from registry
 	ollamaTools := a.buildToolDescriptors()
@@ -147,11 +199,16 @@ func (a *Agent) Run(ctx context.Context, userMessage string, events chan<- Event
 	for {
 		var assistantContent strings.Builder
 		var toolCalls []ollama.ToolCall
+		var opts *ollama.Options
+		if a.cfg.NumCtx > 0 {
+			opts = &ollama.Options{NumCtx: a.cfg.NumCtx}
+		}
 
 		req := ollama.ChatRequest{
 			Model:    a.cfg.Model,
 			Messages: messages,
 			Tools:    ollamaTools,
+			Options:  opts,
 		}
 
 		streamErr := a.client.ChatStream(ctx, req, func(chunk ollama.ChatResponse) error {
@@ -179,6 +236,11 @@ func (a *Agent) Run(ctx context.Context, userMessage string, events chan<- Event
 
 		// Record assistant's message
 		assistantMsg := assistantContent.String()
+		for i := range toolCalls {
+			if toolCalls[i].ID == "" {
+				toolCalls[i].ID = fmt.Sprintf("tool_call_%d", i+1)
+			}
+		}
 		if assistantMsg != "" || len(toolCalls) > 0 {
 			a.session.AddTurn(ollama.RoleAssistant, assistantMsg)
 			// Note: assistant response is logged by the TUI in handleAgentEvent/agentDoneMsg
@@ -204,7 +266,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string, events chan<- Event
 			toolName := tc.Function.Name
 			args := tc.Function.Arguments
 
-			_ = a.sessionLog.Append("tool_call", fmt.Sprintf("%s: %v", toolName, args))
+			_ = a.sessionLog.Append(sesslog.RoleToolCall, fmt.Sprintf("id=%s %s: %v", tc.ID, toolName, args))
 			select {
 			case events <- Event{Type: EventToolCall, Content: toolName}:
 			case <-ctx.Done():
@@ -235,38 +297,47 @@ func (a *Agent) Run(ctx context.Context, userMessage string, events chan<- Event
 
 			// Append tool result to conversation
 			a.session.AddTurn(ollama.RoleTool, resultContent)
-			_ = a.sessionLog.Append(ollama.RoleTool, resultContent)
+			_ = a.sessionLog.Append(sesslog.RoleTool, resultContent)
 			messages = append(messages, ollama.Message{
-				Role:    ollama.RoleTool,
-				Content: resultContent,
+				Role:       ollama.RoleTool,
+				Content:    resultContent,
+				ToolCallID: tc.ID,
 			})
 		}
 		// Continue the loop so the model can respond to the tool results
 	}
 }
 
+// ResumeFromLog reconstructs session memory from a prior session log.
+func (a *Agent) ResumeFromLog(path string) error {
+	log, err := sesslog.LoadFromFile(path)
+	if err != nil {
+		return err
+	}
+
+	a.ResetSession()
+	for _, turn := range log.Turns {
+		switch turn.Role {
+		case sesslog.RoleSummary:
+			a.resumeSummary = turn.Content
+		case sesslog.RoleUser:
+			a.session.AddTurn(ollama.RoleUser, turn.Content)
+		case sesslog.RoleAssistant:
+			a.session.AddTurn(ollama.RoleAssistant, turn.Content)
+		case sesslog.RoleTool:
+			a.session.AddTurn(ollama.RoleTool, turn.Content)
+		}
+	}
+
+	if log.Model != "" {
+		a.cfg.Model = log.Model
+	}
+	return nil
+}
+
 // -------------------------------------------------------------------
 // Helpers
 // -------------------------------------------------------------------
-
-func (a *Agent) buildMessages() []ollama.Message {
-	systemPrompt := a.cfg.SystemPrompt
-	if systemPrompt == "" {
-		systemPrompt = defaultSystemPrompt(a)
-	}
-
-	msgs := []ollama.Message{
-		{Role: ollama.RoleSystem, Content: systemPrompt},
-	}
-
-	for _, t := range a.session.Turns() {
-		msgs = append(msgs, ollama.Message{
-			Role:    t.Role,
-			Content: t.Content,
-		})
-	}
-	return msgs
-}
 
 func (a *Agent) buildToolDescriptors() []ollama.Tool {
 	var out []ollama.Tool
@@ -303,36 +374,6 @@ func (a *Agent) buildToolDescriptors() []ollama.Tool {
 		})
 	}
 	return out
-}
-
-func defaultSystemPrompt(a *Agent) string {
-	var sb strings.Builder
-	sb.WriteString(`You are TeaForge, an expert software development AI assistant running locally.
-You help developers understand, write, and improve code.
-You have access to tools that let you read files, write files, edit code,
-run commands, search the codebase, and save project notes.
-
-When you need to look at code or project structure, use the available tools.
-When you make decisions or discover important information, save it as a project note.
-Always explain what you are doing and why.
-
-`)
-	// Add context from project notes
-	notes := a.project.Notes()
-	if len(notes) > 0 {
-		sb.WriteString("## Project Memory (decisions and notes)\n")
-		for _, n := range notes {
-			sb.WriteString(fmt.Sprintf("- [%s] %s\n", n.Category, n.Content))
-		}
-		sb.WriteString("\n")
-	}
-	// Add code index summary
-	symbols := a.code.AllSymbols()
-	if len(symbols) > 0 {
-		sb.WriteString(fmt.Sprintf("## Code Index (%d symbols indexed)\n", len(symbols)))
-		sb.WriteString("Use the search_code tool to look up specific symbols.\n\n")
-	}
-	return sb.String()
 }
 
 // -------------------------------------------------------------------
@@ -375,6 +416,110 @@ func (t *saveNoteTool) Execute(_ context.Context, params map[string]any) tools.R
 		return tools.Result{IsErr: true, Error: fmt.Sprintf("saving note: %v", err)}
 	}
 	return tools.Result{Output: fmt.Sprintf("Note saved with ID %s", note.ID)}
+}
+
+type recallNotesTool struct {
+	project *memory.ProjectMemory
+}
+
+func (t *recallNotesTool) Name() string { return "recall_notes" }
+func (t *recallNotesTool) Description() string {
+	return "Recall notes from project memory by query and optional category. " +
+		"Use this to fetch relevant prior decisions and discoveries on demand."
+}
+func (t *recallNotesTool) InputSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"query": map[string]any{
+				"type":        "string",
+				"description": "Text to match against note content and category.",
+			},
+			"category": map[string]any{
+				"type":        "string",
+				"description": "Optional category filter (e.g. architecture, pinned, decision).",
+			},
+		},
+		"required": []string{"query"},
+	}
+}
+func (t *recallNotesTool) Execute(_ context.Context, params map[string]any) tools.Result {
+	query, _ := params["query"].(string)
+	category, _ := params["category"].(string)
+	query = strings.TrimSpace(query)
+	category = strings.TrimSpace(category)
+	if query == "" {
+		return tools.Result{IsErr: true, Error: "parameter 'query' is required"}
+	}
+
+	queryLC := strings.ToLower(query)
+	catLC := strings.ToLower(category)
+	matches := make([]memory.Note, 0)
+	for _, n := range t.project.Notes() {
+		noteCat := strings.ToLower(strings.TrimSpace(n.Category))
+		if catLC != "" && noteCat != catLC {
+			continue
+		}
+		contentLC := strings.ToLower(n.Content)
+		if strings.Contains(contentLC, queryLC) || strings.Contains(noteCat, queryLC) {
+			matches = append(matches, n)
+		}
+	}
+
+	if len(matches) == 0 {
+		return tools.Result{Output: fmt.Sprintf("No notes found matching query: %s", query)}
+	}
+
+	if len(matches) > 20 {
+		matches = matches[:20]
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Found %d note(s):\n", len(matches)))
+	for _, n := range matches {
+		sb.WriteString(fmt.Sprintf("- [%s] %s (id=%s)\n", n.Category, n.Content, n.ID))
+	}
+	return tools.Result{Output: strings.TrimSpace(sb.String())}
+}
+
+type listNoteCategoriesTool struct {
+	project *memory.ProjectMemory
+}
+
+func (t *listNoteCategoriesTool) Name() string { return "list_note_categories" }
+func (t *listNoteCategoriesTool) Description() string {
+	return "List available project note categories with counts."
+}
+func (t *listNoteCategoriesTool) InputSchema() map[string]any {
+	return map[string]any{
+		"type":       "object",
+		"properties": map[string]any{},
+	}
+}
+func (t *listNoteCategoriesTool) Execute(_ context.Context, _ map[string]any) tools.Result {
+	counts := make(map[string]int)
+	for _, n := range t.project.Notes() {
+		cat := strings.TrimSpace(n.Category)
+		if cat == "" {
+			cat = "uncategorized"
+		}
+		counts[cat]++
+	}
+	if len(counts) == 0 {
+		return tools.Result{Output: "No note categories available."}
+	}
+
+	cats := make([]string, 0, len(counts))
+	for cat := range counts {
+		cats = append(cats, cat)
+	}
+	sort.Strings(cats)
+
+	var sb strings.Builder
+	sb.WriteString("Note categories:\n")
+	for _, cat := range cats {
+		sb.WriteString(fmt.Sprintf("- %s (%d)\n", cat, counts[cat]))
+	}
+	return tools.Result{Output: strings.TrimSpace(sb.String())}
 }
 
 type searchCodeTool struct {

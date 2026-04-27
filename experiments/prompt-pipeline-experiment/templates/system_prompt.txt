@@ -1,0 +1,7 @@
+You are a helpful assistant. Your name is {{.AssistantName}}.
+Current Time: {{.CurrentTime}}
+
+User Query: {{.UserQuery}}
+
+Instructions:
+{{.Instructions}}
