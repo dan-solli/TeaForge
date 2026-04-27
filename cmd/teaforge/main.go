@@ -24,13 +24,15 @@ func main() {
 
 	// Project memory file lives alongside the source tree
 	memoryFile := filepath.Join(workDir, ".teaforge", "memory.json")
+	sessionsDir := filepath.Join(workDir, ".teaforge", "sessions")
 
 	// Build agent configuration
 	cfg := agent.Config{
-		Model:      modelFromEnv(),
-		OllamaURL:  ollamaURLFromEnv(),
-		WorkDir:    workDir,
-		MemoryFile: memoryFile,
+		Model:       modelFromEnv(),
+		OllamaURL:   ollamaURLFromEnv(),
+		WorkDir:     workDir,
+		MemoryFile:  memoryFile,
+		SessionsDir: sessionsDir,
 	}
 
 	// Create the agent
@@ -60,7 +62,7 @@ func modelFromEnv() string {
 	if m := os.Getenv("TEAFORGE_MODEL"); m != "" {
 		return m
 	}
-	return "llama3.2"
+	return "gemma4:26b"
 }
 
 // ollamaURLFromEnv returns the Ollama base URL, falling back to localhost

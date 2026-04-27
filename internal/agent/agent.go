@@ -13,17 +13,18 @@ import (
 
 	"github.com/dan-solli/teaforge/internal/memory"
 	"github.com/dan-solli/teaforge/internal/ollama"
+	sesslog "github.com/dan-solli/teaforge/internal/session"
 	"github.com/dan-solli/teaforge/internal/tools"
 	"github.com/dan-solli/teaforge/internal/treesitter"
 )
 
 // Event types emitted by the agent during a run.
 const (
-	EventToken     = "token"      // Partial assistant text chunk
-	EventToolCall  = "tool_call"  // The model invoked a tool
+	EventToken      = "token"       // Partial assistant text chunk
+	EventToolCall   = "tool_call"   // The model invoked a tool
 	EventToolResult = "tool_result" // A tool returned its output
-	EventDone      = "done"       // The agent turn is complete
-	EventError     = "error"      // An unrecoverable error occurred
+	EventDone       = "done"        // The agent turn is complete
+	EventError      = "error"       // An unrecoverable error occurred
 )
 
 // Event is emitted by the agent during a run and consumed by the TUI.
@@ -34,21 +35,23 @@ type Event struct {
 
 // Config holds the configuration for an Agent instance.
 type Config struct {
-	Model       string
-	OllamaURL   string
-	WorkDir     string
-	MemoryFile  string // Path to project memory JSON file
+	Model        string
+	OllamaURL    string
+	WorkDir      string
+	MemoryFile   string // Path to project memory JSON file
+	SessionsDir  string // Directory for session logs; empty disables logging
 	SystemPrompt string
 }
 
 // Agent is the central orchestrator: it manages memory, tools and the LLM loop.
 type Agent struct {
-	cfg     Config
-	client  *ollama.Client
-	session *memory.SessionMemory
-	project *memory.ProjectMemory
-	code    *treesitter.CodeMemory
-	tools   *tools.Registry
+	cfg        Config
+	client     *ollama.Client
+	session    *memory.SessionMemory
+	project    *memory.ProjectMemory
+	code       *treesitter.CodeMemory
+	tools      *tools.Registry
+	sessionLog *sesslog.Log // nil when logging is disabled
 }
 
 // New creates a new Agent with the provided configuration.
@@ -62,13 +65,24 @@ func New(cfg Config) (*Agent, error) {
 	code := treesitter.NewCodeMemory()
 	registry := tools.NewRegistry(cfg.WorkDir)
 
+	var sl *sesslog.Log
+	if cfg.SessionsDir != "" {
+		sl, err = sesslog.New(cfg.SessionsDir, cfg.Model, cfg.WorkDir)
+		if err != nil {
+			// Non-fatal: the agent works without logging.
+			fmt.Printf("warning: could not create session log: %v\n", err)
+			sl = nil
+		}
+	}
+
 	a := &Agent{
-		cfg:     cfg,
-		client:  client,
-		session: session,
-		project: project,
-		code:    code,
-		tools:   registry,
+		cfg:        cfg,
+		client:     client,
+		session:    session,
+		project:    project,
+		code:       code,
+		tools:      registry,
+		sessionLog: sl,
 	}
 	// Register memory-aware tools
 	registry.Register(&saveNoteTool{project: project})
@@ -88,6 +102,12 @@ func (a *Agent) Code() *treesitter.CodeMemory { return a.code }
 
 // Tools returns the tool registry.
 func (a *Agent) Tools() *tools.Registry { return a.tools }
+
+// AppendSessionLog appends a turn to the persistent session log.
+// It is a no-op when session logging is disabled (no SessionsDir configured).
+func (a *Agent) AppendSessionLog(role, content string) error {
+	return a.sessionLog.Append(role, content)
+}
 
 // IndexWorkDir indexes the configured working directory into code memory.
 func (a *Agent) IndexWorkDir(ctx context.Context) error {
@@ -112,6 +132,13 @@ func (a *Agent) Run(ctx context.Context, userMessage string, events chan<- Event
 
 	// Build messages from session history
 	messages := a.buildMessages()
+
+	// Log the system prompt (first element) and the user message.
+	// The system prompt is rebuilt each run so we record the exact version used.
+	if len(messages) > 0 && messages[0].Role == ollama.RoleSystem {
+		_ = a.sessionLog.Append("system", messages[0].Content)
+	}
+	_ = a.sessionLog.Append(ollama.RoleUser, userMessage)
 
 	// Build tool descriptors from registry
 	ollamaTools := a.buildToolDescriptors()
@@ -154,6 +181,8 @@ func (a *Agent) Run(ctx context.Context, userMessage string, events chan<- Event
 		assistantMsg := assistantContent.String()
 		if assistantMsg != "" || len(toolCalls) > 0 {
 			a.session.AddTurn(ollama.RoleAssistant, assistantMsg)
+			// Note: assistant response is logged by the TUI in handleAgentEvent/agentDoneMsg
+			// so that the logged text matches exactly what was displayed.
 			messages = append(messages, ollama.Message{
 				Role:      ollama.RoleAssistant,
 				Content:   assistantMsg,
@@ -175,6 +204,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string, events chan<- Event
 			toolName := tc.Function.Name
 			args := tc.Function.Arguments
 
+			_ = a.sessionLog.Append("tool_call", fmt.Sprintf("%s: %v", toolName, args))
 			select {
 			case events <- Event{Type: EventToolCall, Content: toolName}:
 			case <-ctx.Done():
@@ -205,6 +235,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string, events chan<- Event
 
 			// Append tool result to conversation
 			a.session.AddTurn(ollama.RoleTool, resultContent)
+			_ = a.sessionLog.Append(ollama.RoleTool, resultContent)
 			messages = append(messages, ollama.Message{
 				Role:    ollama.RoleTool,
 				Content: resultContent,
@@ -415,4 +446,3 @@ func (t *indexDirectoryTool) Execute(ctx context.Context, params map[string]any)
 	files := t.code.Files()
 	return tools.Result{Output: fmt.Sprintf("Indexed %d files in %s", len(files), path)}
 }
-

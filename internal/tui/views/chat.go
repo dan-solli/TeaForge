@@ -62,7 +62,9 @@ func (c *ChatView) SetSize(w, h int) {
 	c.width = w
 	c.height = h
 	inputH := 5
-	c.viewport.Width = w - 2
+	// Panel overhead: 1 border + 1 padding on each side = 4 chars total.
+	// Viewport width must equal the panel's content area so text fits without clipping.
+	c.viewport.Width = w - 4
 	c.viewport.Height = h - inputH - 4
 	c.textarea.SetWidth(w - 4)
 	c.rebuildViewport()
@@ -150,9 +152,10 @@ func (c *ChatView) Textarea() *textarea.Model {
 func (c *ChatView) View() string {
 	var parts []string
 
-	// Chat history viewport
+	// Chat history viewport.
+	// Width is content area; lipgloss adds 2 border + 2 padding → total = c.width.
 	vp := styles.PanelActive.
-		Width(c.width - 2).
+		Width(c.width - 4).
 		Height(c.viewport.Height + 2).
 		Render(c.viewport.View())
 	parts = append(parts, vp)
@@ -224,15 +227,20 @@ func (c *ChatView) renderEntry(e ChatEntry) string {
 	if maxWidth < 10 {
 		maxWidth = 80
 	}
+	// Each content line is indented by 2 spaces when joined below.
+	// Wrap at maxWidth-2 so that indented lines are exactly maxWidth wide,
+	// preventing the last characters from being clipped by the viewport.
+	wrapAt := maxWidth - 2
+	if wrapAt < 4 {
+		wrapAt = 4
+	}
 
-	// Wrap content lines using rune-aware splitting to avoid breaking UTF-8
-	// characters at byte boundaries.
 	var lines []string
 	for _, line := range strings.Split(content, "\n") {
 		runes := []rune(line)
-		for len(runes) > maxWidth {
-			lines = append(lines, string(runes[:maxWidth]))
-			runes = runes[maxWidth:]
+		for len(runes) > wrapAt {
+			lines = append(lines, string(runes[:wrapAt]))
+			runes = runes[wrapAt:]
 		}
 		lines = append(lines, string(runes))
 	}

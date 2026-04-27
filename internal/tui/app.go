@@ -28,7 +28,7 @@ import (
 type agentEventMsg agent.Event
 
 // tickMsg drives the thinking animation.
-type tickMsg time.Time
+// type tickMsg time.Time
 
 // indexDoneMsg signals that the background code index is complete.
 type indexDoneMsg struct{ err error }
@@ -116,7 +116,7 @@ type App struct {
 	agentCancel context.CancelFunc
 	agentEvents chan agent.Event
 	// accumulates the current assistant response while streaming
-	currentResponse strings.Builder
+	currentResponse *strings.Builder
 }
 
 // NewApp creates the root App model.
@@ -134,16 +134,17 @@ func NewApp(cfg agent.Config, a *agent.Agent) App {
 	}
 
 	return App{
-		keys:        defaultKeys,
-		cfg:         cfg,
-		ag:          a,
-		activeView:  viewChat,
-		chatView:    views.NewChatView(),
-		filesView:   views.NewFilesView(workDir),
-		memoryView:  views.NewMemoryView(a.Session(), a.Project(), a.Code()),
-		sp:          sp,
-		searchInput: si,
-		statusMsg:   fmt.Sprintf("Ready • model: %s", cfg.Model),
+		keys:            defaultKeys,
+		cfg:             cfg,
+		ag:              a,
+		activeView:      viewChat,
+		chatView:        views.NewChatView(),
+		filesView:       views.NewFilesView(workDir),
+		memoryView:      views.NewMemoryView(a.Session(), a.Project(), a.Code()),
+		sp:              sp,
+		searchInput:     si,
+		currentResponse: &strings.Builder{},
+		statusMsg:       fmt.Sprintf("Ready • model: %s", cfg.Model),
 	}
 }
 
@@ -212,6 +213,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.currentResponse.Reset()
 		if resp != "" {
 			a.chatView.AddEntry("assistant", resp)
+			// Log the assistant response — this path is a safety net for the case
+			// where the agent channel closes without a clean EventDone.
+			_ = a.ag.AppendSessionLog("assistant", resp)
 		}
 
 	case spinner.TickMsg:
@@ -461,6 +465,9 @@ func (a *App) handleAgentEvent(ev agent.Event) tea.Cmd {
 		a.currentResponse.Reset()
 		if resp != "" {
 			a.chatView.AddEntry("assistant", resp)
+			// Log the assembled response — this is the definitive version:
+			// exactly what was streamed token-by-token and displayed to the user.
+			_ = a.ag.AppendSessionLog("assistant", resp)
 		}
 		if a.agentCancel != nil {
 			a.agentCancel()

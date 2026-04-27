@@ -36,3 +36,4 @@ go.work.sum
 
 # Built binary (root-level only)
 /teaforge
+TeaForge.code-workspace
