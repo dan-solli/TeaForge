@@ -421,7 +421,10 @@ func fingerprintToolCalls(calls []ollama.ToolCall) string {
 	})
 	h := sha256.New()
 	for _, tc := range sorted {
-		args, _ := json.Marshal(tc.Function.Arguments)
+		args, err := json.Marshal(tc.Function.Arguments)
+		if err != nil {
+			args = []byte("<unmarshalable>")
+		}
 		h.Write([]byte(tc.Function.Name))
 		h.Write([]byte(":"))
 		h.Write(args)
