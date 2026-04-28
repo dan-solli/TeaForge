@@ -171,8 +171,13 @@ func modelContextFromEnvOrDetect(model, ollamaURL string) int {
 		return n
 	}
 	n, err := detectModelContextLength(ollamaURL, model)
-	if err != nil || n <= 0 {
-		return defaultModelContextLength
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not detect context length for model %q: %v; omitting num_ctx and using Ollama default\n", model, err)
+		return 0
+	}
+	if n <= 0 {
+		fmt.Fprintf(os.Stderr, "warning: detected non-positive context length for model %q; omitting num_ctx and using Ollama default\n", model)
+		return 0
 	}
 	return n
 }
