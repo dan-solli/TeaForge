@@ -1,0 +1,15 @@
+name: Commit Lint
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  lint-commits:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Lint PR commits
+        uses: wagoid/commitlint-github-action@v6

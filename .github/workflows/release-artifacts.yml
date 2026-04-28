@@ -1,0 +1,162 @@
+name: Release Artifacts
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build (for example v1.2.3)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: darwin-amd64
+            runner: macos-13
+            goos: darwin
+            goarch: amd64
+            binary_suffix: ""
+            archive_ext: tar.gz
+            cc: ""
+            cc_package: ""
+          - id: darwin-arm64
+            runner: macos-14
+            goos: darwin
+            goarch: arm64
+            binary_suffix: ""
+            archive_ext: tar.gz
+            cc: ""
+            cc_package: ""
+          - id: linux-amd64
+            runner: ubuntu-24.04
+            goos: linux
+            goarch: amd64
+            binary_suffix: ""
+            archive_ext: tar.gz
+            cc: ""
+            cc_package: ""
+          - id: linux-arm64
+            runner: ubuntu-24.04
+            goos: linux
+            goarch: arm64
+            binary_suffix: ""
+            archive_ext: tar.gz
+            cc: aarch64-linux-gnu-gcc
+            cc_package: gcc-aarch64-linux-gnu
+          - id: windows-amd64
+            runner: ubuntu-24.04
+            goos: windows
+            goarch: amd64
+            binary_suffix: .exe
+            archive_ext: zip
+            cc: x86_64-w64-mingw32-gcc
+            cc_package: gcc-mingw-w64-x86-64
+
+    runs-on: ${{ matrix.runner }}
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install cross compiler
+        if: runner.os == 'Linux' && matrix.cc_package != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.cc_package }}
+
+      - name: Build and package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${RELEASE_TAG}" ]]; then
+            echo "RELEASE_TAG is empty"
+            exit 1
+          fi
+
+          version="${RELEASE_TAG#v}"
+          build_date="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          commit="${GITHUB_SHA:0:12}"
+
+          if [[ -n "${{ matrix.cc }}" ]]; then
+            export CC="${{ matrix.cc }}"
+          fi
+
+          export CGO_ENABLED=1
+          export GOOS="${{ matrix.goos }}"
+          export GOARCH="${{ matrix.goarch }}"
+
+          archive_base="teaforge_${version}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          out_dir="dist/${archive_base}"
+          binary_name="teaforge${{ matrix.binary_suffix }}"
+
+          mkdir -p "${out_dir}"
+
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/dan-solli/teaforge/internal/buildinfo.Version=${version} -X github.com/dan-solli/teaforge/internal/buildinfo.Commit=${commit} -X github.com/dan-solli/teaforge/internal/buildinfo.Date=${build_date}" \
+            -o "${out_dir}/${binary_name}" \
+            ./cmd/teaforge
+
+          cp README.md LICENSE "${out_dir}/"
+
+          if [[ "${{ matrix.archive_ext }}" == "zip" ]]; then
+            (cd dist && zip -rq "${archive_base}.zip" "${archive_base}")
+          else
+            tar -C dist -czf "dist/${archive_base}.tar.gz" "${archive_base}"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.id }}
+          path: dist/teaforge_*_${{ matrix.goos }}_${{ matrix.goarch }}.*
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Flatten artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          find dist -type f -name 'teaforge_*' -exec mv {} dist/ \;
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum teaforge_* > checksums.txt
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          files: |
+            dist/teaforge_*
+            dist/checksums.txt
+          append_body: true
+          body: |
+            ## Binary Artifacts
+            SHA256 checksums are included in `checksums.txt`.
