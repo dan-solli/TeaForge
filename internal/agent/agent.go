@@ -8,6 +8,8 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -29,6 +31,10 @@ const (
 	EventContext    = "context"     // Prompt budget and compaction stats
 	EventDone       = "done"        // The agent turn is complete
 	EventError      = "error"       // An unrecoverable error occurred
+
+	defaultMaxToolIterations               = 24
+	defaultMaxConsecutiveDuplicateToolCall = 3
+	defaultMaxNoProgressToolRounds         = 4
 )
 
 // Event is emitted by the agent during a run and consumed by the TUI.
@@ -45,7 +51,14 @@ type Config struct {
 	MemoryFile   string // Path to project memory JSON file
 	SessionsDir  string // Directory for session logs; empty disables logging
 	SystemPrompt string
-	NumCtx       int
+	NumCtx       int // Model context window passed to Ollama.
+	PromptBudget int // Usable prompt budget used for assembly/compaction.
+	// Max tool rounds before forcing a final response without tools.
+	MaxToolIterations int
+	// Max repeated identical tool-call signatures before forcing final response.
+	MaxConsecutiveDuplicateToolCalls int
+	// Max consecutive tool rounds that add no usable evidence.
+	MaxNoProgressToolRounds int
 }
 
 // Agent is the central orchestrator: it manages memory, tools and the LLM loop.
@@ -59,6 +72,10 @@ type Agent struct {
 	tools         *tools.Registry
 	pipeline      *prompt.Pipeline
 	sessionLog    *sesslog.Log // nil when logging is disabled
+	promptBudget  int
+	maxToolIters  int
+	maxDupCalls   int
+	maxNoProgress int
 }
 
 // New creates a new Agent with the provided configuration.
@@ -91,10 +108,27 @@ func New(cfg Config) (*Agent, error) {
 		tools:      registry,
 		sessionLog: sl,
 	}
+	promptBudget := cfg.PromptBudget
+	if promptBudget <= 0 {
+		promptBudget = cfg.NumCtx
+	}
+	a.promptBudget = promptBudget
+	a.maxToolIters = cfg.MaxToolIterations
+	if a.maxToolIters <= 0 {
+		a.maxToolIters = defaultMaxToolIterations
+	}
+	a.maxDupCalls = cfg.MaxConsecutiveDuplicateToolCalls
+	if a.maxDupCalls <= 0 {
+		a.maxDupCalls = defaultMaxConsecutiveDuplicateToolCall
+	}
+	a.maxNoProgress = cfg.MaxNoProgressToolRounds
+	if a.maxNoProgress <= 0 {
+		a.maxNoProgress = defaultMaxNoProgressToolRounds
+	}
 	a.pipeline = prompt.NewDefaultPipeline([]prompt.Guardrail{
 		guardrails.NewSnapshotGuardrail(a.AppendSessionLog),
 	})
-	a.pipeline.SetTokenBudget(cfg.NumCtx)
+	a.pipeline.SetTokenBudget(a.promptBudget)
 	a.pipeline.SetCompactor(newLLMCompactor(client, cfg.Model, cfg.NumCtx))
 	// Register memory-aware tools
 	registry.Register(&saveNoteTool{project: project})
@@ -158,7 +192,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string, attachedPaths []str
 		UserMessage:     userMessage,
 		AttachedPaths:   attachedPaths,
 		ResumeSummary:   a.resumeSummary,
-		NumCtx:          a.cfg.NumCtx,
+		NumCtx:          a.promptBudget,
 		SessionTurns:    a.session.Turns(),
 		ProjectNotes:    a.project.Notes(),
 		CodeSymbolCount: len(a.code.AllSymbols()),
@@ -194,6 +228,10 @@ func (a *Agent) Run(ctx context.Context, userMessage string, attachedPaths []str
 
 	// Build tool descriptors from registry
 	ollamaTools := a.buildToolDescriptors()
+	toolRounds := 0
+	lastToolSig := ""
+	repeatedToolSigCount := 0
+	noProgressRounds := 0
 
 	// Agentic loop: continue until the model stops requesting tool calls
 	for {
@@ -261,36 +299,60 @@ func (a *Agent) Run(ctx context.Context, userMessage string, attachedPaths []str
 			return
 		}
 
+		toolRounds++
+		toolSig := fingerprintToolCalls(toolCalls)
+		if toolSig == lastToolSig {
+			repeatedToolSigCount++
+		} else {
+			lastToolSig = toolSig
+			repeatedToolSigCount = 1
+		}
+
+		// Check loop guard before dispatching tools to avoid repeated side effects.
+		if toolRounds >= a.maxToolIters || repeatedToolSigCount >= a.maxDupCalls {
+			reason := fmt.Sprintf("tool loop guard triggered (rounds=%d/%d, repeated_calls=%d/%d)", toolRounds, a.maxToolIters, repeatedToolSigCount, a.maxDupCalls)
+			a.finalizeAfterToolLoopGuard(ctx, events, messages, reason)
+			return
+		}
+
 		// Dispatch tool calls
+		roundHadProgress := false
 		for _, tc := range toolCalls {
 			toolName := tc.Function.Name
 			args := tc.Function.Arguments
 
 			_ = a.sessionLog.Append(sesslog.RoleToolCall, fmt.Sprintf("id=%s %s: %v", tc.ID, toolName, args))
+			callSummary := summarizeToolCall(toolName, args)
 			select {
-			case events <- Event{Type: EventToolCall, Content: toolName}:
+			case events <- Event{Type: EventToolCall, Content: callSummary}:
 			case <-ctx.Done():
 				return
 			}
 
 			tool, ok := a.tools.Get(toolName)
 			var resultContent string
+			var toolResult tools.Result
 			if !ok {
-				resultContent = fmt.Sprintf("Error: unknown tool %q", toolName)
+				toolResult = tools.Result{IsErr: true, Error: fmt.Sprintf("unknown tool %q", toolName)}
+				resultContent = "Error: " + toolResult.Error
 			} else {
-				result := tool.Execute(ctx, args)
-				if result.IsErr {
-					resultContent = "Error: " + result.Error
-					if result.Output != "" {
-						resultContent += "\n" + result.Output
+				toolResult = tool.Execute(ctx, args)
+				if toolResult.IsErr {
+					resultContent = "Error: " + toolResult.Error
+					if toolResult.Output != "" {
+						resultContent += "\n" + toolResult.Output
 					}
 				} else {
-					resultContent = result.Output
+					resultContent = toolResult.Output
 				}
+			}
+			resultSummary := summarizeToolResult(toolName, args, toolResult, resultContent)
+			if toolCallMadeProgress(toolName, toolResult, resultContent) {
+				roundHadProgress = true
 			}
 
 			select {
-			case events <- Event{Type: EventToolResult, Content: fmt.Sprintf("[%s] %s", toolName, resultContent)}:
+			case events <- Event{Type: EventToolResult, Content: resultSummary}:
 			case <-ctx.Done():
 				return
 			}
@@ -304,8 +366,253 @@ func (a *Agent) Run(ctx context.Context, userMessage string, attachedPaths []str
 				ToolCallID: tc.ID,
 			})
 		}
+
+		if roundHadProgress {
+			noProgressRounds = 0
+		} else {
+			noProgressRounds++
+		}
+
+		if toolRounds >= a.maxToolIters || repeatedToolSigCount >= a.maxDupCalls || noProgressRounds >= a.maxNoProgress {
+			reason := fmt.Sprintf(
+				"tool loop guard triggered (rounds=%d/%d, repeated_calls=%d/%d, no_progress_rounds=%d/%d)",
+				toolRounds,
+				a.maxToolIters,
+				repeatedToolSigCount,
+				a.maxDupCalls,
+				noProgressRounds,
+				a.maxNoProgress,
+			)
+			a.finalizeAfterToolLoopGuard(ctx, events, messages, reason)
+			return
+		}
 		// Continue the loop so the model can respond to the tool results
 	}
+}
+
+func (a *Agent) finalizeAfterToolLoopGuard(ctx context.Context, events chan<- Event, messages []ollama.Message, reason string) {
+	guardPrompt := "Stop using tools now and provide a best-effort final response for the user. Include: what was tried, concrete findings, blockers, and the most likely next fix steps."
+	if reason != "" {
+		guardPrompt += "\nLoop guard reason: " + reason
+	}
+	messages = append(messages, ollama.Message{Role: ollama.RoleSystem, Content: guardPrompt})
+
+	var opts *ollama.Options
+	if a.cfg.NumCtx > 0 {
+		opts = &ollama.Options{NumCtx: a.cfg.NumCtx}
+	}
+	req := ollama.ChatRequest{
+		Model:    a.cfg.Model,
+		Messages: messages,
+		Options:  opts,
+	}
+
+	var assistantContent strings.Builder
+	emittedToken := false
+	err := a.client.ChatStream(ctx, req, func(chunk ollama.ChatResponse) error {
+		if chunk.Message.Content != "" {
+			assistantContent.WriteString(chunk.Message.Content)
+			emittedToken = true
+			select {
+			case events <- Event{Type: EventToken, Content: chunk.Message.Content}:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		return nil
+	})
+
+	final := strings.TrimSpace(assistantContent.String())
+	if err != nil {
+		final = "I hit a repeated tool loop and stopped to avoid spinning indefinitely. I could not produce a reliable final answer before the loop guard triggered."
+	} else if final == "" {
+		final = "I stopped due to repeated tool-loop behavior and could not make further progress."
+	}
+	if !emittedToken {
+		select {
+		case events <- Event{Type: EventToken, Content: final}:
+		case <-ctx.Done():
+			return
+		}
+	}
+
+	a.session.AddTurn(ollama.RoleAssistant, final)
+	select {
+	case events <- Event{Type: EventDone}:
+	case <-ctx.Done():
+	}
+}
+
+func fingerprintToolCalls(calls []ollama.ToolCall) string {
+	if len(calls) == 0 {
+		return ""
+	}
+	// Sort a copy by name so the same set of calls in any order produces the same fingerprint.
+	sorted := make([]ollama.ToolCall, len(calls))
+	copy(sorted, calls)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].Function.Name < sorted[j].Function.Name
+	})
+	h := sha256.New()
+	for _, tc := range sorted {
+		args, err := json.Marshal(tc.Function.Arguments)
+		if err != nil {
+			args = []byte("<unmarshalable>")
+		}
+		h.Write([]byte(tc.Function.Name))
+		h.Write([]byte(":"))
+		h.Write(args)
+		h.Write([]byte("|"))
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func toolCallMadeProgress(toolName string, result tools.Result, fullOutput string) bool {
+	if result.IsErr {
+		return false
+	}
+
+	output := strings.TrimSpace(fullOutput)
+	if output == "" {
+		return false
+	}
+
+	switch toolName {
+	case "search_code":
+		return !strings.HasPrefix(output, "No symbols found matching:")
+	case "recall_notes":
+		return !strings.HasPrefix(output, "No notes found matching query:")
+	case "index_directory":
+		return !strings.HasPrefix(output, "Indexed 0 files")
+	default:
+		return true
+	}
+}
+
+func summarizeToolCall(toolName string, args map[string]any) string {
+	switch toolName {
+	case "read_file":
+		return fmt.Sprintf("Reading file %s", pathArg(args, "."))
+	case "write_file":
+		return fmt.Sprintf("Writing file %s", pathArg(args, "."))
+	case "edit_file":
+		return fmt.Sprintf("Editing file %s", pathArg(args, "."))
+	case "list_directory":
+		return fmt.Sprintf("Listing files in %s", pathArg(args, "."))
+	case "run_command":
+		return fmt.Sprintf("Running command %s", quoteAndTruncate(stringArg(args, "command", ""), 80))
+	case "save_note":
+		return fmt.Sprintf("Saving note in category %s", quoteAndTruncate(stringArg(args, "category", "uncategorized"), 48))
+	case "recall_notes":
+		return fmt.Sprintf("Searching notes for %s", quoteAndTruncate(stringArg(args, "query", ""), 64))
+	case "list_note_categories":
+		return "Listing note categories"
+	case "search_code":
+		return fmt.Sprintf("Searching code for %s", quoteAndTruncate(stringArg(args, "query", ""), 64))
+	case "index_directory":
+		return fmt.Sprintf("Indexing directory %s", pathArg(args, "."))
+	default:
+		return fmt.Sprintf("Running tool %s", toolName)
+	}
+}
+
+func summarizeToolResult(toolName string, args map[string]any, result tools.Result, fullOutput string) string {
+	if result.IsErr {
+		errText := strings.TrimSpace(result.Error)
+		if errText == "" {
+			errText = "unknown error"
+		}
+		return fmt.Sprintf("%s failed: %s", toolLabel(toolName), truncateInline(errText, 140))
+	}
+
+	switch toolName {
+	case "read_file":
+		return fmt.Sprintf("Read file %s (%d bytes)", pathArg(args, "."), len(fullOutput))
+	case "write_file":
+		return fmt.Sprintf("Wrote file %s", pathArg(args, "."))
+	case "edit_file":
+		return fmt.Sprintf("Edited file %s", pathArg(args, "."))
+	case "list_directory":
+		count := countNonEmptyLines(fullOutput)
+		return fmt.Sprintf("Listed %d item(s) in %s", count, pathArg(args, "."))
+	case "run_command":
+		if strings.TrimSpace(fullOutput) == "" {
+			return "Command completed (no output)"
+		}
+		return fmt.Sprintf("Command completed (%d bytes output)", len(fullOutput))
+	case "save_note":
+		return "Note saved"
+	case "recall_notes":
+		return "Notes query completed"
+	case "list_note_categories":
+		return "Listed note categories"
+	case "search_code":
+		count := countNonEmptyLines(fullOutput)
+		return fmt.Sprintf("Found %d matching symbol line(s)", count)
+	case "index_directory":
+		return fmt.Sprintf("Indexed directory %s", pathArg(args, "."))
+	default:
+		return fmt.Sprintf("%s completed", toolLabel(toolName))
+	}
+}
+
+func pathArg(args map[string]any, fallback string) string {
+	v := stringArg(args, "path", "")
+	if strings.TrimSpace(v) == "" {
+		return fallback
+	}
+	return quoteAndTruncate(v, 120)
+}
+
+func stringArg(args map[string]any, key, fallback string) string {
+	if args == nil {
+		return fallback
+	}
+	v, _ := args[key].(string)
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return fallback
+	}
+	return v
+}
+
+func quoteAndTruncate(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return `""`
+	}
+	return fmt.Sprintf("%q", truncateInline(s, max))
+}
+
+func truncateInline(s string, max int) string {
+	s = strings.ReplaceAll(strings.TrimSpace(s), "\n", " ")
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:max]
+	}
+	return s[:max-3] + "..."
+}
+
+func countNonEmptyLines(s string) int {
+	if strings.TrimSpace(s) == "" {
+		return 0
+	}
+	count := 0
+	for _, line := range strings.Split(s, "\n") {
+		if strings.TrimSpace(line) != "" {
+			count++
+		}
+	}
+	return count
+}
+
+func toolLabel(name string) string {
+	if strings.TrimSpace(name) == "" {
+		return "Tool"
+	}
+	return strings.ReplaceAll(name, "_", " ")
 }
 
 // ResumeFromLog reconstructs session memory from a prior session log.

@@ -6,6 +6,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -14,10 +15,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/dan-solli/teaforge/internal/agent"
 	"github.com/dan-solli/teaforge/internal/buildinfo"
+	"github.com/dan-solli/teaforge/internal/ollama"
 	"github.com/dan-solli/teaforge/internal/tui"
 )
 
@@ -27,6 +30,11 @@ type teaProgram interface {
 
 var newAgent = agent.New
 var getwd = os.Getwd
+var detectModelContextLength = func(ollamaURL, model string) (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	return ollama.NewClient(ollamaURL).ModelContextLength(ctx, model)
+}
 var newProgram = func(app tui.App) teaProgram {
 	return tea.NewProgram(
 		app,
@@ -34,6 +42,11 @@ var newProgram = func(app tui.App) teaProgram {
 		tea.WithMouseCellMotion(),
 	)
 }
+
+const (
+	defaultModelContextLength = 262144
+	defaultContextUsagePct    = 80
+)
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -64,14 +77,20 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	memoryFile := filepath.Join(workDir, ".teaforge", "memory.json")
 	sessionsDir := filepath.Join(workDir, ".teaforge", "sessions")
 
+	model := modelFromEnv()
+	ollamaURL := ollamaURLFromEnv()
+	modelCtx := modelContextFromEnvOrDetect(model, ollamaURL)
+	promptBudget := usablePromptBudget(modelCtx)
+
 	// Build agent configuration
 	cfg := agent.Config{
-		Model:       modelFromEnv(),
-		OllamaURL:   ollamaURLFromEnv(),
-		WorkDir:     workDir,
-		MemoryFile:  memoryFile,
-		SessionsDir: sessionsDir,
-		NumCtx:      numCtxFromEnv(),
+		Model:        model,
+		OllamaURL:    ollamaURL,
+		WorkDir:      workDir,
+		MemoryFile:   memoryFile,
+		SessionsDir:  sessionsDir,
+		NumCtx:       modelCtx,
+		PromptBudget: promptBudget,
 	}
 
 	// Create the agent
@@ -127,17 +146,63 @@ func ollamaURLFromEnv() string {
 }
 
 // numCtxFromEnv returns the context window token budget.
-// It defaults to 8192 when TEAFORGE_NUM_CTX is unset or invalid.
+// It defaults to 262144 when TEAFORGE_NUM_CTX is unset or invalid.
 func numCtxFromEnv() int {
+	if n, ok := numCtxOverrideFromEnv(); ok {
+		return n
+	}
+	return defaultModelContextLength
+}
+
+func numCtxOverrideFromEnv() (int, bool) {
 	raw := os.Getenv("TEAFORGE_NUM_CTX")
 	if raw == "" {
-		return 8192
+		return 0, false
 	}
 	n, err := strconv.Atoi(raw)
 	if err != nil || n <= 0 {
-		return 8192
+		return 0, false
+	}
+	return n, true
+}
+
+func modelContextFromEnvOrDetect(model, ollamaURL string) int {
+	if n, ok := numCtxOverrideFromEnv(); ok {
+		return n
+	}
+	n, err := detectModelContextLength(ollamaURL, model)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not detect context length for model %q: %v; omitting num_ctx and using Ollama default\n", model, err)
+		return 0
+	}
+	if n <= 0 {
+		fmt.Fprintf(os.Stderr, "warning: detected non-positive context length for model %q; omitting num_ctx and using Ollama default\n", model)
+		return 0
 	}
 	return n
+}
+
+func contextUsagePercentFromEnv() int {
+	raw := strings.TrimSpace(os.Getenv("TEAFORGE_CTX_USAGE_PERCENT"))
+	if raw == "" {
+		return defaultContextUsagePct
+	}
+	pct, err := strconv.Atoi(raw)
+	if err != nil || pct < 50 || pct > 95 {
+		return defaultContextUsagePct
+	}
+	return pct
+}
+
+func usablePromptBudget(totalCtx int) int {
+	if totalCtx <= 0 {
+		totalCtx = defaultModelContextLength
+	}
+	usable := totalCtx * contextUsagePercentFromEnv() / 100
+	if usable < 1024 {
+		return totalCtx
+	}
+	return usable
 }
 
 func resolveResumePath(sessionsDir, id string, latest bool) (string, error) {
