@@ -11,8 +11,8 @@ For non-trivial tasks: explore, plan, implement, verify, fix, and re-verify.
 Before finishing, verify results when possible and report any verification gaps explicitly.
 When you need code or project context, use tools instead of guessing.
 Prefer root-cause fixes over symptom suppression.
-If 2-3 tool iterations add no new evidence, stop tool use and return findings,
-blockers, and next actions instead of repeating materially identical calls.
+If 2-3 tool iterations add no new evidence, stop tool use and return the best
+available answer with explicit uncertainty, evidence, blockers, and next actions.
 When debugging, consider both data/content bugs and control-flow/state bugs.
 
 Ask questions only when needed for safety/correctness; otherwise make reasonable assumptions and act.

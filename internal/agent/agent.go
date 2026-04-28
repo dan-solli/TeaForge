@@ -8,7 +8,6 @@ package agent
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -34,6 +33,7 @@ const (
 
 	defaultMaxToolIterations               = 24
 	defaultMaxConsecutiveDuplicateToolCall = 3
+	defaultMaxNoProgressToolRounds         = 4
 )
 
 // Event is emitted by the agent during a run and consumed by the TUI.
@@ -56,6 +56,8 @@ type Config struct {
 	MaxToolIterations int
 	// Max repeated identical tool-call signatures before forcing final response.
 	MaxConsecutiveDuplicateToolCalls int
+	// Max consecutive tool rounds that add no usable evidence.
+	MaxNoProgressToolRounds int
 }
 
 // Agent is the central orchestrator: it manages memory, tools and the LLM loop.
@@ -72,6 +74,7 @@ type Agent struct {
 	promptBudget  int
 	maxToolIters  int
 	maxDupCalls   int
+	maxNoProgress int
 }
 
 // New creates a new Agent with the provided configuration.
@@ -116,6 +119,10 @@ func New(cfg Config) (*Agent, error) {
 	a.maxDupCalls = cfg.MaxConsecutiveDuplicateToolCalls
 	if a.maxDupCalls <= 0 {
 		a.maxDupCalls = defaultMaxConsecutiveDuplicateToolCall
+	}
+	a.maxNoProgress = cfg.MaxNoProgressToolRounds
+	if a.maxNoProgress <= 0 {
+		a.maxNoProgress = defaultMaxNoProgressToolRounds
 	}
 	a.pipeline = prompt.NewDefaultPipeline([]prompt.Guardrail{
 		guardrails.NewSnapshotGuardrail(a.AppendSessionLog),
@@ -223,6 +230,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string, attachedPaths []str
 	toolRounds := 0
 	lastToolSig := ""
 	repeatedToolSigCount := 0
+	noProgressRounds := 0
 
 	// Agentic loop: continue until the model stops requesting tool calls
 	for {
@@ -307,6 +315,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string, attachedPaths []str
 		}
 
 		// Dispatch tool calls
+		roundHadProgress := false
 		for _, tc := range toolCalls {
 			toolName := tc.Function.Name
 			args := tc.Function.Arguments
@@ -337,6 +346,9 @@ func (a *Agent) Run(ctx context.Context, userMessage string, attachedPaths []str
 				}
 			}
 			resultSummary := summarizeToolResult(toolName, args, toolResult, resultContent)
+			if toolCallMadeProgress(toolName, toolResult, resultContent) {
+				roundHadProgress = true
+			}
 
 			select {
 			case events <- Event{Type: EventToolResult, Content: resultSummary}:
@@ -354,6 +366,25 @@ func (a *Agent) Run(ctx context.Context, userMessage string, attachedPaths []str
 			})
 		}
 
+		if roundHadProgress {
+			noProgressRounds = 0
+		} else {
+			noProgressRounds++
+		}
+
+		if toolRounds >= a.maxToolIters || repeatedToolSigCount >= a.maxDupCalls || noProgressRounds >= a.maxNoProgress {
+			reason := fmt.Sprintf(
+				"tool loop guard triggered (rounds=%d/%d, repeated_calls=%d/%d, no_progress_rounds=%d/%d)",
+				toolRounds,
+				a.maxToolIters,
+				repeatedToolSigCount,
+				a.maxDupCalls,
+				noProgressRounds,
+				a.maxNoProgress,
+			)
+			a.finalizeAfterToolLoopGuard(ctx, events, messages, reason)
+			return
+		}
 		// Continue the loop so the model can respond to the tool results
 	}
 }
@@ -415,24 +446,34 @@ func fingerprintToolCalls(calls []ollama.ToolCall) string {
 	if len(calls) == 0 {
 		return ""
 	}
-	// Sort a copy by name so the same set of calls in any order produces the same fingerprint.
-	sorted := make([]ollama.ToolCall, len(calls))
-	copy(sorted, calls)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].Function.Name < sorted[j].Function.Name
-	})
-	h := sha256.New()
-	for _, tc := range sorted {
-		args, err := json.Marshal(tc.Function.Arguments)
-		if err != nil {
-			args = []byte("<unmarshalable>")
-		}
-		h.Write([]byte(tc.Function.Name))
-		h.Write([]byte(":"))
-		h.Write(args)
-		h.Write([]byte("|"))
+	parts := make([]string, 0, len(calls))
+	for _, tc := range calls {
+		args, _ := json.Marshal(tc.Function.Arguments)
+		parts = append(parts, tc.Function.Name+":"+string(args))
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func toolCallMadeProgress(toolName string, result tools.Result, fullOutput string) bool {
+	if result.IsErr {
+		return false
+	}
+
+	output := strings.TrimSpace(fullOutput)
+	if output == "" {
+		return false
+	}
+
+	switch toolName {
+	case "search_code":
+		return !strings.HasPrefix(output, "No symbols found matching:")
+	case "recall_notes":
+		return !strings.HasPrefix(output, "No notes found matching query:")
+	case "index_directory":
+		return !strings.HasPrefix(output, "Indexed 0 files")
+	default:
+		return true
+	}
 }
 
 func summarizeToolCall(toolName string, args map[string]any) string {

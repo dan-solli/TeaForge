@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -342,5 +343,84 @@ func TestAgentRun_ToolEventsAreSummarized(t *testing.T) {
 	}
 	if !strings.Contains(resultSummary, "Read file") {
 		t.Fatalf("expected summarized tool result, got %q", resultSummary)
+	}
+}
+
+func TestAgentRun_NoProgressToolLoopGuardForcesFinalNoToolResponse(t *testing.T) {
+	t.Parallel()
+
+	var calls int32
+	var sawNoToolsRequest atomic.Bool
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/chat" {
+			t.Fatalf("path=%q", r.URL.Path)
+		}
+		var req ollama.ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if len(req.Tools) == 0 {
+			sawNoToolsRequest.Store(true)
+			_, _ = w.Write([]byte(`{"model":"m","message":{"role":"assistant","content":"Final response after no-progress guard."},"done":false}` + "\n"))
+			_, _ = w.Write([]byte(`{"model":"m","message":{"role":"assistant","content":""},"done":true}` + "\n"))
+			return
+		}
+
+		idx := atomic.AddInt32(&calls, 1)
+		missingPath := fmt.Sprintf("/definitely/missing-%d.txt", idx)
+		payload := `{"model":"m","message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"read_file","arguments":{"path":"` + missingPath + `"}}}]},"done":true}` + "\n"
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	a, err := New(Config{
+		Model:                            "m",
+		OllamaURL:                        server.URL,
+		WorkDir:                          dir,
+		MemoryFile:                       filepath.Join(dir, "memory.json"),
+		NumCtx:                           2048,
+		MaxToolIterations:                20,
+		MaxConsecutiveDuplicateToolCalls: 20,
+		MaxNoProgressToolRounds:          3,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	events := make(chan Event, 128)
+	a.Run(context.Background(), "investigate", nil, events)
+
+	var sawDone bool
+	var sawFinalToken bool
+	var sawError string
+	var eventTypes []string
+	for ev := range events {
+		eventTypes = append(eventTypes, ev.Type)
+		if ev.Type == EventDone {
+			sawDone = true
+		}
+		if ev.Type == EventError {
+			sawError = ev.Content
+		}
+		if ev.Type == EventToken && strings.Contains(ev.Content, "Final response after no-progress guard") {
+			sawFinalToken = true
+		}
+	}
+
+	if !sawDone {
+		t.Fatalf("expected done event, got events=%v error=%q", eventTypes, sawError)
+	}
+	if !sawNoToolsRequest.Load() {
+		t.Fatalf("expected final request without tools after no-progress guard, got calls=%d events=%v error=%q", atomic.LoadInt32(&calls), eventTypes, sawError)
+	}
+	if !sawFinalToken {
+		t.Fatalf("expected final summary token after no-progress guard, got events=%v error=%q", eventTypes, sawError)
+	}
+	if got := atomic.LoadInt32(&calls); got > 3 {
+		t.Fatalf("expected no-progress guard to stop within 3 tool rounds, got %d", got)
 	}
 }
