@@ -178,8 +178,12 @@ func (c *Client) ModelContextLength(ctx context.Context, model string) (int, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		return 0, fmt.Errorf("unexpected status %s: %s", resp.Status, string(b))
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		msg := string(b)
+		if len(b) == 4096 {
+			msg += "..."
+		}
+		return 0, fmt.Errorf("unexpected status %s: %s", resp.Status, msg)
 	}
 
 	var out showModelResponse
@@ -214,8 +218,12 @@ func (c *Client) ChatStream(ctx context.Context, req ChatRequest, onChunk func(C
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("unexpected status %s: %s", resp.Status, string(b))
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		msg := string(b)
+		if len(b) == 4096 {
+			msg += "..."
+		}
+		return fmt.Errorf("unexpected status %s: %s", resp.Status, msg)
 	}
 	scanner := bufio.NewScanner(resp.Body)
 	// Default scanner token size is 64K, which can be too small for some
@@ -258,8 +266,12 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("unexpected status %s: %s", resp.Status, string(b))
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		msg := string(b)
+		if len(b) == 4096 {
+			msg += "..."
+		}
+		return nil, fmt.Errorf("unexpected status %s: %s", resp.Status, msg)
 	}
 	var result ChatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {

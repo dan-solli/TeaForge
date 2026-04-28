@@ -299,6 +299,13 @@ func (a *Agent) Run(ctx context.Context, userMessage string, attachedPaths []str
 			repeatedToolSigCount = 1
 		}
 
+		// Check loop guard before dispatching tools to avoid repeated side effects.
+		if toolRounds >= a.maxToolIters || repeatedToolSigCount >= a.maxDupCalls {
+			reason := fmt.Sprintf("tool loop guard triggered (rounds=%d/%d, repeated_calls=%d/%d)", toolRounds, a.maxToolIters, repeatedToolSigCount, a.maxDupCalls)
+			a.finalizeAfterToolLoopGuard(ctx, events, messages, reason)
+			return
+		}
+
 		// Dispatch tool calls
 		for _, tc := range toolCalls {
 			toolName := tc.Function.Name
@@ -347,11 +354,6 @@ func (a *Agent) Run(ctx context.Context, userMessage string, attachedPaths []str
 			})
 		}
 
-		if toolRounds >= a.maxToolIters || repeatedToolSigCount >= a.maxDupCalls {
-			reason := fmt.Sprintf("tool loop guard triggered (rounds=%d/%d, repeated_calls=%d/%d)", toolRounds, a.maxToolIters, repeatedToolSigCount, a.maxDupCalls)
-			a.finalizeAfterToolLoopGuard(ctx, events, messages, reason)
-			return
-		}
 		// Continue the loop so the model can respond to the tool results
 	}
 }
