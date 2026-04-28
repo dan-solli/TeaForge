@@ -1,0 +1,16 @@
+{
+  "read_file_description": "Read the contents of a file. Returns the file content as a string.",
+  "read_file_path_param_description": "Absolute or relative path to the file to read.",
+  "write_file_description": "Write content to a file. Creates the file (and any parent directories) if it does not exist. Overwrites existing content.",
+  "write_file_path_param_description": "Path to the file to write.",
+  "write_file_content_param_description": "Content to write into the file.",
+  "edit_file_description": "Replace an exact string in a file with new content. The old_str must match exactly once in the file.",
+  "edit_file_path_param_description": "Path to the file to edit.",
+  "edit_file_old_str_param_description": "The exact string to replace (must appear exactly once).",
+  "edit_file_new_str_param_description": "The replacement string.",
+  "list_directory_description": "List files and directories at the given path.",
+  "list_directory_path_param_description": "Directory path to list.",
+  "run_command_description": "Execute a shell command and return its stdout/stderr output. Use with caution: prefer safe, non-destructive commands.",
+  "run_command_command_param_description": "The shell command to execute.",
+  "run_command_working_dir_param_description": "Optional working directory for the command."
+}

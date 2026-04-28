@@ -35,7 +35,7 @@ func (s *AgentInstructionsSource) Collect(_ context.Context, req *Request) ([]Co
 		return nil, nil
 	}
 
-	var sb strings.Builder
+	sections := make([]string, 0, len(paths))
 	for _, p := range paths {
 		data, err := os.ReadFile(p)
 		if err != nil {
@@ -45,28 +45,32 @@ func (s *AgentInstructionsSource) Collect(_ context.Context, req *Request) ([]Co
 		if content == "" {
 			continue
 		}
-		if sb.Len() > 0 {
-			sb.WriteString("\n\n")
-		}
 		rel, err := filepath.Rel(req.WorkDir, p)
 		if err != nil {
 			rel = p
 		}
-		sb.WriteString("## From ")
-		sb.WriteString(filepath.ToSlash(rel))
-		sb.WriteString("\n")
-		sb.WriteString(content)
+		section, err := renderPromptTemplate("agents_md_section.tmpl", struct {
+			RelPath string
+			Content string
+		}{
+			RelPath: filepath.ToSlash(rel),
+			Content: content,
+		})
+		if err != nil {
+			return nil, err
+		}
+		sections = append(sections, strings.TrimSuffix(section, "\n"))
 	}
-	if sb.Len() == 0 {
+	if len(sections) == 0 {
 		return nil, nil
 	}
-	sb.WriteString("\n\n")
+	body := strings.Join(sections, "\n\n") + "\n\n"
 
 	return []ContextItem{{
 		Source:   s.Name(),
 		Kind:     "instruction",
 		Role:     ollama.RoleSystem,
-		Body:     sb.String(),
+		Body:     body,
 		Priority: s.Priority(),
 		PinKey:   "agents_md",
 	}}, nil

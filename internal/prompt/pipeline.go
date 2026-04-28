@@ -37,14 +37,6 @@ func NewDefaultPipeline(guardrails []Guardrail) *Pipeline {
 	}, NewAssembler(), guardrails)
 }
 
-func NewLegacyPipeline() *Pipeline {
-	return NewPipeline([]ContextSource{
-		NewSystemPromptSource(),
-		newLegacyPinnedNotesSource(),
-		NewCodeIndexSummarySource(),
-	}, NewAssembler(), nil)
-}
-
 func (p *Pipeline) Build(ctx context.Context, req *Request) ([]ollama.Message, *PromptTrace, error) {
 	if p == nil {
 		return nil, nil, fmt.Errorf("nil pipeline")

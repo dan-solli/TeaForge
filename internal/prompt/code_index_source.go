@@ -28,8 +28,12 @@ func (s *CodeIndexSummarySource) Collect(_ context.Context, req *Request) ([]Con
 		return nil, nil
 	}
 
-	body := fmt.Sprintf("## Code Index (%d symbols indexed)\n", req.CodeSymbolCount) +
-		"Use the search_code tool to look up specific symbols.\n\n"
+	body, err := renderPromptTemplate("code_index_summary.tmpl", struct {
+		CodeSymbolCount int
+	}{CodeSymbolCount: req.CodeSymbolCount})
+	if err != nil {
+		return nil, err
+	}
 
 	return []ContextItem{{
 		Source:   s.Name(),

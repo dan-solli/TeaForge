@@ -1,0 +1,13 @@
+{
+  "save_note_description": "Save a note or decision to the persistent project memory. Use this to record important decisions, discoveries, or TODOs.",
+  "save_note_category_param_description": "Category for the note (e.g. 'decision', 'todo', 'discovery', 'architecture').",
+  "save_note_content_param_description": "The content of the note.",
+  "recall_notes_description": "Recall notes from project memory by query and optional category. Use this to fetch relevant prior decisions and discoveries on demand.",
+  "recall_notes_query_param_description": "Text to match against note content and category.",
+  "recall_notes_category_param_description": "Optional category filter (e.g. architecture, pinned, decision).",
+  "list_note_categories_description": "List available project note categories with counts.",
+  "search_code_description": "Search the code index for symbols matching a query string. Returns matching function names, types, variables etc. with their file locations.",
+  "search_code_query_param_description": "Symbol name or partial name to search for.",
+  "index_directory_description": "Index a directory with tree-sitter to build or refresh the code memory. Call this when you want to analyse a new project directory.",
+  "index_directory_path_param_description": "Directory path to index."
+}

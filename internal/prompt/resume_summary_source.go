@@ -32,7 +32,12 @@ func (s *ResumeSummarySource) Collect(_ context.Context, req *Request) ([]Contex
 	if summary == "" {
 		return nil, nil
 	}
-	body := "<conversation_summary>\n" + summary + "\n</conversation_summary>\n\n"
+	body, err := renderPromptTemplate("resume_summary.tmpl", struct {
+		Summary string
+	}{Summary: summary})
+	if err != nil {
+		return nil, err
+	}
 	return []ContextItem{{
 		Source:   s.Name(),
 		Kind:     "summary",

@@ -37,21 +37,15 @@ type Event struct {
 	Content string // Token text, tool name, tool result, or error message
 }
 
-const (
-	PromptPipelineExperimental = "experimental"
-	PromptPipelineLegacy       = "legacy"
-)
-
 // Config holds the configuration for an Agent instance.
 type Config struct {
-	Model          string
-	OllamaURL      string
-	WorkDir        string
-	MemoryFile     string // Path to project memory JSON file
-	SessionsDir    string // Directory for session logs; empty disables logging
-	SystemPrompt   string
-	NumCtx         int
-	PromptPipeline string // "experimental" (default) or "legacy"
+	Model        string
+	OllamaURL    string
+	WorkDir      string
+	MemoryFile   string // Path to project memory JSON file
+	SessionsDir  string // Directory for session logs; empty disables logging
+	SystemPrompt string
+	NumCtx       int
 }
 
 // Agent is the central orchestrator: it manages memory, tools and the LLM loop.
@@ -97,22 +91,9 @@ func New(cfg Config) (*Agent, error) {
 		tools:      registry,
 		sessionLog: sl,
 	}
-	pipelineMode := strings.ToLower(strings.TrimSpace(cfg.PromptPipeline))
-	if pipelineMode == "" {
-		pipelineMode = PromptPipelineExperimental
-	}
-	a.cfg.PromptPipeline = pipelineMode
-
-	switch pipelineMode {
-	case PromptPipelineExperimental:
-		a.pipeline = prompt.NewDefaultPipeline([]prompt.Guardrail{
-			guardrails.NewSnapshotGuardrail(a.AppendSessionLog),
-		})
-	case PromptPipelineLegacy:
-		a.pipeline = prompt.NewLegacyPipeline()
-	default:
-		return nil, fmt.Errorf("unknown prompt pipeline mode: %q", cfg.PromptPipeline)
-	}
+	a.pipeline = prompt.NewDefaultPipeline([]prompt.Guardrail{
+		guardrails.NewSnapshotGuardrail(a.AppendSessionLog),
+	})
 	a.pipeline.SetTokenBudget(cfg.NumCtx)
 	a.pipeline.SetCompactor(newLLMCompactor(client, cfg.Model, cfg.NumCtx))
 	// Register memory-aware tools
@@ -405,8 +386,7 @@ type saveNoteTool struct {
 
 func (t *saveNoteTool) Name() string { return "save_note" }
 func (t *saveNoteTool) Description() string {
-	return "Save a note or decision to the persistent project memory. " +
-		"Use this to record important decisions, discoveries, or TODOs."
+	return agentToolText.SaveNoteDescription
 }
 func (t *saveNoteTool) InputSchema() map[string]any {
 	return map[string]any{
@@ -414,11 +394,11 @@ func (t *saveNoteTool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"category": map[string]any{
 				"type":        "string",
-				"description": "Category for the note (e.g. 'decision', 'todo', 'discovery', 'architecture').",
+				"description": agentToolText.SaveNoteCategoryParamDescription,
 			},
 			"content": map[string]any{
 				"type":        "string",
-				"description": "The content of the note.",
+				"description": agentToolText.SaveNoteContentParamDescription,
 			},
 		},
 		"required": []string{"category", "content"},
@@ -443,8 +423,7 @@ type recallNotesTool struct {
 
 func (t *recallNotesTool) Name() string { return "recall_notes" }
 func (t *recallNotesTool) Description() string {
-	return "Recall notes from project memory by query and optional category. " +
-		"Use this to fetch relevant prior decisions and discoveries on demand."
+	return agentToolText.RecallNotesDescription
 }
 func (t *recallNotesTool) InputSchema() map[string]any {
 	return map[string]any{
@@ -452,11 +431,11 @@ func (t *recallNotesTool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"query": map[string]any{
 				"type":        "string",
-				"description": "Text to match against note content and category.",
+				"description": agentToolText.RecallNotesQueryParamDescription,
 			},
 			"category": map[string]any{
 				"type":        "string",
-				"description": "Optional category filter (e.g. architecture, pinned, decision).",
+				"description": agentToolText.RecallNotesCategoryParamDescription,
 			},
 		},
 		"required": []string{"query"},
@@ -506,7 +485,7 @@ type listNoteCategoriesTool struct {
 
 func (t *listNoteCategoriesTool) Name() string { return "list_note_categories" }
 func (t *listNoteCategoriesTool) Description() string {
-	return "List available project note categories with counts."
+	return agentToolText.ListNoteCategoriesDescription
 }
 func (t *listNoteCategoriesTool) InputSchema() map[string]any {
 	return map[string]any{
@@ -547,8 +526,7 @@ type searchCodeTool struct {
 
 func (t *searchCodeTool) Name() string { return "search_code" }
 func (t *searchCodeTool) Description() string {
-	return "Search the code index for symbols matching a query string. " +
-		"Returns matching function names, types, variables etc. with their file locations."
+	return agentToolText.SearchCodeDescription
 }
 func (t *searchCodeTool) InputSchema() map[string]any {
 	return map[string]any{
@@ -556,7 +534,7 @@ func (t *searchCodeTool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"query": map[string]any{
 				"type":        "string",
-				"description": "Symbol name or partial name to search for.",
+				"description": agentToolText.SearchCodeQueryParamDescription,
 			},
 		},
 		"required": []string{"query"},
@@ -584,8 +562,7 @@ type indexDirectoryTool struct {
 
 func (t *indexDirectoryTool) Name() string { return "index_directory" }
 func (t *indexDirectoryTool) Description() string {
-	return "Index a directory with tree-sitter to build or refresh the code memory. " +
-		"Call this when you want to analyse a new project directory."
+	return agentToolText.IndexDirectoryDescription
 }
 func (t *indexDirectoryTool) InputSchema() map[string]any {
 	return map[string]any{
@@ -593,7 +570,7 @@ func (t *indexDirectoryTool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"path": map[string]any{
 				"type":        "string",
-				"description": "Directory path to index.",
+				"description": agentToolText.IndexDirectoryPathParamDescription,
 			},
 		},
 		"required": []string{"path"},

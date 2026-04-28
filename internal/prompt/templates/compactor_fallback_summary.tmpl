@@ -1,0 +1,5 @@
+{{if .HasTurns}}- Conversation summary fallback (LLM compaction unavailable):
+{{range .Lines}}- {{.Role}}: {{.Content}}
+{{end}}{{if .Omitted}}- ... additional turns omitted
+{{end}}{{else}}No prior turns to summarize.
+{{end}}

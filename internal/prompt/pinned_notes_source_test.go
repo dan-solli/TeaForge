@@ -18,6 +18,8 @@ func TestPinnedNotesSourceCollect_FiltersToPinnedCategories(t *testing.T) {
 			{Category: "pinned", Content: "must include"},
 			{Category: "architecture", Content: "include arch"},
 			{Category: "always", Content: "include always"},
+			{Category: "postmortem", Content: "include postmortem"},
+			{Category: "debugging", Content: "include debugging"},
 		},
 	})
 	if err != nil {
@@ -30,29 +32,9 @@ func TestPinnedNotesSourceCollect_FiltersToPinnedCategories(t *testing.T) {
 	if strings.Contains(body, "not pinned") {
 		t.Fatalf("unexpected non-pinned note in body: %q", body)
 	}
-	for _, want := range []string{"must include", "include arch", "include always"} {
+	for _, want := range []string{"must include", "include arch", "include always", "include postmortem", "include debugging"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("expected %q in body: %q", want, body)
 		}
-	}
-}
-
-func TestPinnedNotesSourceCollect_LegacyIncludesAll(t *testing.T) {
-	t.Parallel()
-
-	src := newLegacyPinnedNotesSource()
-	items, err := src.Collect(context.Background(), &Request{
-		ProjectNotes: []memory.Note{
-			{Category: "decision", Content: "legacy include"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("Collect: %v", err)
-	}
-	if len(items) != 1 {
-		t.Fatalf("expected 1 context item, got %d", len(items))
-	}
-	if !strings.Contains(items[0].Body, "legacy include") {
-		t.Fatalf("expected note in legacy output: %q", items[0].Body)
 	}
 }

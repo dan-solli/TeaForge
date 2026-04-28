@@ -16,6 +16,8 @@ type llmCompactor struct {
 	numCtx int
 }
 
+var compactorSystemPrompt = prompt.MustLoadTemplate("compactor_system_prompt.txt")
+
 func newLLMCompactor(client *ollama.Client, model string, numCtx int) *llmCompactor {
 	return &llmCompactor{client: client, model: model, numCtx: numCtx}
 }
@@ -46,17 +48,22 @@ func (c *llmCompactor) Compact(ctx context.Context, turns []memory.Turn, keepLat
 	kept := append([]memory.Turn(nil), turns[split:]...)
 
 	transcript := renderTurnsForCompaction(older)
+	userPrompt, err := prompt.RenderTemplate("compactor_user_prompt.tmpl", struct {
+		Transcript string
+	}{Transcript: transcript})
+	if err != nil {
+		return fallbackCompactionSummary(older), kept, nil
+	}
 	chatReq := ollama.ChatRequest{
 		Model: c.model,
 		Messages: []ollama.Message{
 			{
-				Role: ollama.RoleSystem,
-				Content: "You summarize coding-agent conversations for context compression. " +
-					"Return concise bullet points with decisions made, files touched, open questions, and unresolved risks.",
+				Role:    ollama.RoleSystem,
+				Content: compactorSystemPrompt,
 			},
 			{
 				Role:    ollama.RoleUser,
-				Content: "Summarize this transcript faithfully. Keep concrete file names and decisions.\n\n" + transcript,
+				Content: userPrompt,
 			},
 		},
 		Options: &ollama.Options{Temperature: 0.1, NumCtx: c.numCtx},
@@ -86,6 +93,38 @@ func renderTurnsForCompaction(turns []memory.Turn) string {
 }
 
 func fallbackCompactionSummary(turns []memory.Turn) string {
+	type summaryLine struct {
+		Role    string
+		Content string
+	}
+	data := struct {
+		HasTurns bool
+		Lines    []summaryLine
+		Omitted  bool
+	}{
+		HasTurns: len(turns) > 0,
+		Lines:    make([]summaryLine, 0, minInt(len(turns), 12)),
+	}
+	for i, t := range turns {
+		if i >= 12 {
+			data.Omitted = true
+			break
+		}
+		content := strings.TrimSpace(t.Content)
+		if len(content) > 180 {
+			content = content[:180] + "..."
+		}
+		data.Lines = append(data.Lines, summaryLine{Role: t.Role, Content: content})
+	}
+
+	rendered, err := prompt.RenderTemplate("compactor_fallback_summary.tmpl", data)
+	if err != nil {
+		return fallbackCompactionSummaryInline(turns)
+	}
+	return strings.TrimSpace(rendered)
+}
+
+func fallbackCompactionSummaryInline(turns []memory.Turn) string {
 	if len(turns) == 0 {
 		return "No prior turns to summarize."
 	}
@@ -103,4 +142,11 @@ func fallbackCompactionSummary(turns []memory.Turn) string {
 		sb.WriteString(fmt.Sprintf("- %s: %s\n", t.Role, content))
 	}
 	return strings.TrimSpace(sb.String())
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

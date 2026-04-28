@@ -39,7 +39,7 @@ type ReadFileTool struct{}
 
 func (t ReadFileTool) Name() string { return "read_file" }
 func (t ReadFileTool) Description() string {
-	return "Read the contents of a file. Returns the file content as a string."
+	return toolText.ReadFileDescription
 }
 func (t ReadFileTool) InputSchema() map[string]any {
 	return map[string]any{
@@ -47,7 +47,7 @@ func (t ReadFileTool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"path": map[string]any{
 				"type":        "string",
-				"description": "Absolute or relative path to the file to read.",
+				"description": toolText.ReadFilePathParamDescription,
 			},
 		},
 		"required": []string{"path"},
@@ -74,7 +74,7 @@ type WriteFileTool struct{}
 
 func (t WriteFileTool) Name() string { return "write_file" }
 func (t WriteFileTool) Description() string {
-	return "Write content to a file. Creates the file (and any parent directories) if it does not exist. Overwrites existing content."
+	return toolText.WriteFileDescription
 }
 func (t WriteFileTool) InputSchema() map[string]any {
 	return map[string]any{
@@ -82,11 +82,11 @@ func (t WriteFileTool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"path": map[string]any{
 				"type":        "string",
-				"description": "Path to the file to write.",
+				"description": toolText.WriteFilePathParamDescription,
 			},
 			"content": map[string]any{
 				"type":        "string",
-				"description": "Content to write into the file.",
+				"description": toolText.WriteFileContentParamDescription,
 			},
 		},
 		"required": []string{"path", "content"},
@@ -119,7 +119,7 @@ type EditFileTool struct{}
 
 func (t EditFileTool) Name() string { return "edit_file" }
 func (t EditFileTool) Description() string {
-	return "Replace an exact string in a file with new content. The old_str must match exactly once in the file."
+	return toolText.EditFileDescription
 }
 func (t EditFileTool) InputSchema() map[string]any {
 	return map[string]any{
@@ -127,15 +127,15 @@ func (t EditFileTool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"path": map[string]any{
 				"type":        "string",
-				"description": "Path to the file to edit.",
+				"description": toolText.EditFilePathParamDescription,
 			},
 			"old_str": map[string]any{
 				"type":        "string",
-				"description": "The exact string to replace (must appear exactly once).",
+				"description": toolText.EditFileOldStrParamDescription,
 			},
 			"new_str": map[string]any{
 				"type":        "string",
-				"description": "The replacement string.",
+				"description": toolText.EditFileNewStrParamDescription,
 			},
 		},
 		"required": []string{"path", "old_str", "new_str"},
@@ -176,7 +176,7 @@ type ListDirectoryTool struct{}
 
 func (t ListDirectoryTool) Name() string { return "list_directory" }
 func (t ListDirectoryTool) Description() string {
-	return "List files and directories at the given path."
+	return toolText.ListDirectoryDescription
 }
 func (t ListDirectoryTool) InputSchema() map[string]any {
 	return map[string]any{
@@ -184,7 +184,7 @@ func (t ListDirectoryTool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"path": map[string]any{
 				"type":        "string",
-				"description": "Directory path to list.",
+				"description": toolText.ListDirectoryPathParamDescription,
 			},
 		},
 		"required": []string{"path"},
@@ -226,8 +226,7 @@ type RunCommandTool struct {
 
 func (t *RunCommandTool) Name() string { return "run_command" }
 func (t *RunCommandTool) Description() string {
-	return "Execute a shell command and return its stdout/stderr output. " +
-		"Use with caution: prefer safe, non-destructive commands."
+	return toolText.RunCommandDescription
 }
 func (t *RunCommandTool) InputSchema() map[string]any {
 	return map[string]any{
@@ -235,11 +234,11 @@ func (t *RunCommandTool) InputSchema() map[string]any {
 		"properties": map[string]any{
 			"command": map[string]any{
 				"type":        "string",
-				"description": "The shell command to execute.",
+				"description": toolText.RunCommandCommandParamDescription,
 			},
 			"working_dir": map[string]any{
 				"type":        "string",
-				"description": "Optional working directory for the command.",
+				"description": toolText.RunCommandWorkingDirParamDescription,
 			},
 		},
 		"required": []string{"command"},

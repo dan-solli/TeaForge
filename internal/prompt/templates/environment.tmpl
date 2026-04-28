@@ -1,0 +1,20 @@
+<env>
+timestamp: {{ .Timestamp }}
+working_directory: {{ .WorkingDirectory }}
+{{- if .Model }}
+model: {{ .Model }}
+{{- end }}
+{{- if .GitBranch }}
+git_branch: {{ .GitBranch }}
+{{- end }}
+git_status: {{ .GitStatus }}
+{{- if .HasRecentFiles }}
+recent_files:
+{{- range .RecentFiles }}
+- {{ . }}
+{{- end }}
+{{- else }}
+recent_files: none
+{{- end }}
+</env>
+

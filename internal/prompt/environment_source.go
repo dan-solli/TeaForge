@@ -39,41 +39,39 @@ func (s *EnvironmentSource) Collect(ctx context.Context, req *Request) ([]Contex
 	if err != nil {
 		workDir = req.WorkDir
 	}
+	now := nowUTC()
 	branch, modified, untracked := gitStatus(ctx, workDir)
-	recent := recentlyModifiedFiles(workDir, nowUTC().Add(-1*time.Hour), 20)
-
-	var sb strings.Builder
-	sb.WriteString("<env>\n")
-	sb.WriteString(fmt.Sprintf("timestamp: %s\n", nowUTC().Format(time.RFC3339)))
-	sb.WriteString(fmt.Sprintf("working_directory: %s\n", filepath.ToSlash(workDir)))
-	if req.Model != "" {
-		sb.WriteString(fmt.Sprintf("model: %s\n", req.Model))
-	}
-	if branch != "" {
-		sb.WriteString(fmt.Sprintf("git_branch: %s\n", branch))
-	}
+	recent := recentlyModifiedFiles(workDir, now.Add(-1*time.Hour), 20)
+	gitStatusLine := "unavailable"
 	if modified >= 0 && untracked >= 0 {
-		sb.WriteString(fmt.Sprintf("git_status: modified=%d untracked=%d\n", modified, untracked))
-	} else {
-		sb.WriteString("git_status: unavailable\n")
+		gitStatusLine = fmt.Sprintf("modified=%d untracked=%d", modified, untracked)
 	}
-	if len(recent) == 0 {
-		sb.WriteString("recent_files: none\n")
-	} else {
-		sb.WriteString("recent_files:\n")
-		for _, f := range recent {
-			sb.WriteString("- ")
-			sb.WriteString(f)
-			sb.WriteString("\n")
-		}
+	body, err := renderPromptTemplate("environment.tmpl", struct {
+		Timestamp        string
+		WorkingDirectory string
+		Model            string
+		GitBranch        string
+		GitStatus        string
+		HasRecentFiles   bool
+		RecentFiles      []string
+	}{
+		Timestamp:        now.Format(time.RFC3339),
+		WorkingDirectory: filepath.ToSlash(workDir),
+		Model:            req.Model,
+		GitBranch:        branch,
+		GitStatus:        gitStatusLine,
+		HasRecentFiles:   len(recent) > 0,
+		RecentFiles:      recent,
+	})
+	if err != nil {
+		return nil, err
 	}
-	sb.WriteString("</env>\n\n")
 
 	return []ContextItem{{
 		Source:   s.Name(),
 		Kind:     "environment",
 		Role:     ollama.RoleSystem,
-		Body:     sb.String(),
+		Body:     body,
 		Priority: s.Priority(),
 		PinKey:   "environment",
 	}}, nil

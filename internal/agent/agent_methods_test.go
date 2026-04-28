@@ -44,27 +44,3 @@ func TestAgentAppendAndIndexNoop(t *testing.T) {
 		t.Fatalf("IndexWorkDir: %v", err)
 	}
 }
-
-func TestAgentNew_DefaultPipelineMode(t *testing.T) {
-	t.Parallel()
-	a := newTestAgent(t)
-	if a.cfg.PromptPipeline != PromptPipelineExperimental {
-		t.Fatalf("PromptPipeline=%q want %q", a.cfg.PromptPipeline, PromptPipelineExperimental)
-	}
-}
-
-func TestAgentNew_InvalidPipelineMode(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	_, err := New(Config{
-		Model:          "m",
-		OllamaURL:      "http://localhost:11434",
-		WorkDir:        dir,
-		MemoryFile:     filepath.Join(dir, "memory.json"),
-		NumCtx:         2048,
-		PromptPipeline: "not-a-mode",
-	})
-	if err == nil {
-		t.Fatal("expected error for invalid pipeline mode")
-	}
-}

@@ -2,7 +2,6 @@ package prompt
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -62,22 +61,28 @@ func (s *AttachmentsSource) Collect(_ context.Context, req *Request) ([]ContextI
 			truncated = true
 		}
 
-		var body strings.Builder
-		body.WriteString(fmt.Sprintf("<file path=\"%s\">\n", filepath.ToSlash(relPath)))
-		body.Write(data)
+		content := string(data)
 		if len(data) > 0 && data[len(data)-1] != '\n' {
-			body.WriteByte('\n')
+			content += "\n"
 		}
-		if truncated {
-			body.WriteString("...[truncated]\n")
+		body, err := renderPromptTemplate("attachment_file.tmpl", struct {
+			RelPath   string
+			Content   string
+			Truncated bool
+		}{
+			RelPath:   filepath.ToSlash(relPath),
+			Content:   content,
+			Truncated: truncated,
+		})
+		if err != nil {
+			return nil, err
 		}
-		body.WriteString("</file>\n")
 
 		items = append(items, ContextItem{
 			Source:   s.Name(),
 			Kind:     "attachment",
 			Role:     ollama.RoleUser,
-			Body:     body.String(),
+			Body:     body,
 			Priority: s.Priority(),
 			PinKey:   "attachment:" + filepath.ToSlash(relPath),
 		})

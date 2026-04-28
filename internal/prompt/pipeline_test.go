@@ -2,23 +2,24 @@ package prompt
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/dan-solli/teaforge/internal/memory"
 	"github.com/dan-solli/teaforge/internal/ollama"
 )
 
-func TestLegacyPipelineBuild_DefaultPromptAndHistory(t *testing.T) {
+func TestDefaultPipelineBuild_DefaultPromptAndHistory(t *testing.T) {
 	t.Parallel()
 
-	p := NewLegacyPipeline()
+	p := NewDefaultPipeline(nil)
 	req := &Request{
 		SessionTurns: []memory.Turn{
 			{Role: ollama.RoleUser, Content: "hello"},
 			{Role: ollama.RoleAssistant, Content: "hi"},
 		},
 		ProjectNotes: []memory.Note{
-			{Category: "decision", Content: "Use refactor-first"},
+			{Category: "pinned", Content: "Use refactor-first"},
 			{Category: "todo", Content: "Add tests"},
 		},
 		CodeSymbolCount: 3,
@@ -38,26 +39,19 @@ func TestLegacyPipelineBuild_DefaultPromptAndHistory(t *testing.T) {
 		t.Fatalf("expected first message role %q, got %q", ollama.RoleSystem, msgs[0].Role)
 	}
 
-	expectedPrompt := `You are TeaForge, an expert software development AI assistant running locally.
-You help developers understand, write, and improve code.
-You have access to tools that let you read files, write files, edit code,
-run commands, search the codebase, and save project notes.
-
-When you need to look at code or project structure, use the available tools.
-When you make decisions or discover important information, save it as a project note.
-Always explain what you are doing and why.
-
-## Project Memory (decisions and notes)
-- [decision] Use refactor-first
-- [todo] Add tests
-
-## Code Index (3 symbols indexed)
-Use the search_code tool to look up specific symbols.
-
-`
-
-	if msgs[0].Content != expectedPrompt {
-		t.Fatalf("unexpected system prompt\nwant:\n%q\ngot:\n%q", expectedPrompt, msgs[0].Content)
+	system := msgs[0].Content
+	for _, want := range []string{
+		"You are TeaForge, an expert software development AI assistant running locally.",
+		"## Project Memory (decisions and notes)",
+		"Use refactor-first",
+		"## Code Index (3 symbols indexed)",
+	} {
+		if !strings.Contains(system, want) {
+			t.Fatalf("expected system prompt to contain %q\ncontent=%q", want, system)
+		}
+	}
+	if strings.Contains(system, "Add tests") {
+		t.Fatalf("expected non-pinned note to be filtered from prompt\ncontent=%q", system)
 	}
 
 	if msgs[1].Role != ollama.RoleUser || msgs[1].Content != "hello" {
@@ -68,14 +62,17 @@ Use the search_code tool to look up specific symbols.
 	}
 }
 
-func TestLegacyPipelineBuild_OverrideSystemPrompt(t *testing.T) {
+func TestDefaultPipelineBuild_OverrideSystemPrompt(t *testing.T) {
 	t.Parallel()
 
-	p := NewLegacyPipeline()
+	p := NewDefaultPipeline(nil)
 	req := &Request{
 		SystemPrompt:    "custom prompt",
-		ProjectNotes:    []memory.Note{{Category: "decision", Content: "ignored"}},
+		ProjectNotes:    []memory.Note{{Category: "pinned", Content: "ignored"}},
 		CodeSymbolCount: 42,
+		WorkDir:         ".",
+		UserMessage:     "@README.md",
+		ResumeSummary:   "ignored",
 	}
 
 	msgs, _, err := p.Build(context.Background(), req)
@@ -93,10 +90,10 @@ func TestLegacyPipelineBuild_OverrideSystemPrompt(t *testing.T) {
 	}
 }
 
-func TestLegacyPipelineBuild_NilRequest(t *testing.T) {
+func TestDefaultPipelineBuild_NilRequest(t *testing.T) {
 	t.Parallel()
 
-	p := NewLegacyPipeline()
+	p := NewDefaultPipeline(nil)
 	_, _, err := p.Build(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error for nil request")
