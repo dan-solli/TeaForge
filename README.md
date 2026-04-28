@@ -1,57 +1,26 @@
 # TeaForge
 
-> A TUI-based agentic software development environment powered by local Ollama AI models.
+TeaForge is a local, terminal-first coding assistant built on Ollama. It combines an agentic tool loop, persistent memory, and a tree-sitter code index in a Bubble Tea TUI.
 
-TeaForge puts an AI coding assistant directly in your terminal. It follows the agentic patterns established by Anthropic, combining a streaming LLM loop with built-in tools, three layers of memory, and tree-sitter powered code analysis.
+## What It Does
 
----
+- Runs a tool-using coding agent in your terminal.
+- Streams assistant output in real time.
+- Persists project notes and session logs.
+- Indexes code symbols for structural code search.
+- Supports resumable sessions.
 
-## Features
+## Quick Start
 
-### 🤖 Agentic Loop
-- Implements the Anthropic-style tool-use agent loop: the model reasons, calls tools, observes results, and continues until the task is complete.
-- Streams tokens to the TUI in real time.
+### 1. Prerequisites
 
-### 🧠 Three Memory Layers
-| Layer | What it stores | Persistence |
-|---|---|---|
-| **Session memory** | The current conversation history and key-value context | In-process only |
-| **Project memory** | Decisions, notes and discoveries (saved as `/.teaforge/memory.json`) | Persisted to disk |
-| **Code memory** | Structural index of the source tree built with tree-sitter | Rebuilt on start / on demand |
+- Go 1.24+
+- Ollama installed and running (`ollama serve`)
+- C toolchain for CGO/tree-sitter (clang or gcc)
 
-### 🛠 Built-in Tools
-The agent can call these tools autonomously:
+### 2. Install
 
-| Tool | Description |
-|---|---|
-| `read_file` | Read any file from the filesystem |
-| `write_file` | Create or overwrite a file |
-| `edit_file` | Replace an exact string in a file (surgical edits) |
-| `list_directory` | List files in a directory |
-| `run_command` | Execute a shell command (60 s timeout) |
-| `search_code` | Full-text symbol search across the tree-sitter index |
-| `index_directory` | (Re-)index a directory into the code memory |
-| `save_note` | Persist a project note to disk |
-
-### 🌳 Tree-sitter Code Analysis
-Supported languages: **Go**, **Python**, **TypeScript**, **JavaScript**.
-
-TeaForge indexes your project on startup, extracting functions, types, constants and imports so the AI always has structural context available via `search_code`.
-
-### 💬 TUI Views
-- **Chat** (`ctrl+1`) – streaming conversation with the agent
-- **Files** (`ctrl+2`) – file tree explorer; press Enter on a file to summarise it
-- **Memory** (`ctrl+3`) – browse all three memory layers; press `/` to search code symbols
-- **Models** (`ctrl+4`) – list and switch between installed Ollama models
-
----
-
-## Requirements
-- [Go 1.21+](https://go.dev/dl/)
-- [Ollama](https://ollama.com/) running locally (`ollama serve`)
-- A C compiler (for tree-sitter CGO bindings) — GCC or Clang
-
-## Installation
+Option A, from source:
 
 ```bash
 git clone https://github.com/dan-solli/TeaForge
@@ -59,81 +28,162 @@ cd TeaForge
 go build -o teaforge ./cmd/teaforge
 ```
 
-Prebuilt binaries are published on GitHub Releases for:
+Option B, prebuilt binaries from GitHub Releases:
 
-- macOS (`arm64`, `amd64`)
-- Linux (`amd64`, `arm64`)
-- Windows (`amd64`)
+- macOS: `arm64`, `amd64`
+- Linux: `amd64`, `arm64`
+- Windows: `amd64`
 
-## Running
+### 3. Start Ollama and Run
 
 ```bash
-# Use the default model (llama3.2) and current directory
+# Start Ollama (if not already running)
+ollama serve
+
+# Optional: pull a model first
+ollama pull gemma4:26b
+
+# Run TeaForge in your current project directory
 ./teaforge
-
-# Choose a different model
-TEAFORGE_MODEL=codellama ./teaforge
-
-# Point at a remote Ollama instance
-OLLAMA_HOST=http://192.168.1.100:11434 ./teaforge
-
-# Print build/version metadata
-./teaforge --version
 ```
 
-## Versioning, Changelog and Releases
+## CLI Usage
 
-TeaForge uses **Semantic Versioning** (`vMAJOR.MINOR.PATCH`) and automated release management.
+### Flags
 
-### Commit Format
+```bash
+# Print build metadata and exit
+./teaforge --version
 
-Use Conventional Commits where possible:
+# Resume a specific session ID (filename without .json)
+./teaforge --resume 2026-04-28T04-47-00Z
 
-- `feat:` for features (minor bump)
-- `fix:` for bug fixes (patch bump)
-- `perf:` for performance fixes (patch bump)
-- `BREAKING CHANGE:` in body/footer (major bump)
+# Resume the newest saved session
+./teaforge --resume-latest
+```
 
-### Automated Flow
+### Environment Variables
 
-1. Push commits to `main`.
-2. The **Release Please** workflow opens/updates a release PR with the next SemVer version and `CHANGELOG.md` updates.
-3. Merging the release PR creates a Git tag and GitHub Release.
-4. The **Release Artifacts** workflow builds platform binaries, packages them, and uploads assets plus `checksums.txt`.
+| Variable | Purpose | Default |
+|---|---|---|
+| `TEAFORGE_MODEL` | Ollama model name | `gemma4:26b` |
+| `OLLAMA_HOST` | Ollama base URL | `http://localhost:11434` |
+| `TEAFORGE_NUM_CTX` | Context token budget | `8192` |
 
-### Manual Build of Release Artifacts
+Examples:
 
-You can manually trigger the `Release Artifacts` workflow with a tag (for example `v1.2.3`) using the workflow dispatch input.
+```bash
+TEAFORGE_MODEL=qwen2.5-coder:14b ./teaforge
+OLLAMA_HOST=http://192.168.1.100:11434 ./teaforge
+TEAFORGE_NUM_CTX=16384 ./teaforge
+```
+
+## TUI Workflow
+
+### Views
+
+- Chat (`ctrl+1`): interact with the agent.
+- Files (`ctrl+2`): browse files and attach file(s) for the next chat turn.
+- Memory (`ctrl+3`): inspect session/project/code memory and symbol search.
+- Models (`ctrl+4`): list and switch installed Ollama models.
+
+### Typical Flow
+
+1. Open Files view and press Enter on one or more files to queue attachments.
+2. Return to Chat and submit your prompt.
+3. Agent processes your prompt with attached files and available tools.
+4. Use Memory view to inspect saved notes and indexed symbols.
 
 ## Key Bindings
 
 | Key | Action |
 |---|---|
-| `ctrl+1` – `ctrl+4` | Switch views |
-| `Enter` | Send message (single line) / expand directory |
-| `ctrl+s` | Send multi-line message |
-| `ctrl+n` | Start a new session |
-| `ctrl+r` | Re-index the working directory |
-| `tab` / `shift+tab` | Cycle memory tabs |
-| `/` | Search code symbols (in Memory view) |
-| `↑` / `↓` | Navigate lists |
-| `ctrl+c` | Quit |
+| `ctrl+1` `ctrl+2` `ctrl+3` `ctrl+4` | Switch views |
+| `enter` (Chat) | Send a single-line message |
+| `ctrl+s` (Chat) | Send multiline message |
+| `enter` (Files) | Attach selected file for next turn |
+| `enter` (Models) | Select active model |
+| `ctrl+n` | Start new session |
+| `ctrl+r` | Open session picker (resume) |
+| `ctrl+shift+r` | Re-index code memory |
+| `tab` / `shift+tab` | Memory tab navigation |
+| `/` (Memory) | Start symbol search |
+| `up` / `down` | Navigate lists |
+| `ctrl+c` / `ctrl+q` | Quit |
+
+## Memory and Storage
+
+TeaForge stores project-scoped data under `.teaforge/` in your working directory:
+
+- `.teaforge/memory.json`: persistent project notes.
+- `.teaforge/sessions/*.json`: session transcripts and summaries used for resume.
+
+Memory layers:
+
+- Session memory: live conversation context.
+- Project memory: durable notes/decisions.
+- Code memory: tree-sitter index of symbols.
+
+## Built-in Agent Tools
+
+| Tool | Purpose |
+|---|---|
+| `read_file` | Read file content |
+| `write_file` | Create/overwrite files |
+| `edit_file` | Exact-string surgical edits |
+| `list_directory` | List directory contents |
+| `run_command` | Run shell command (bounded output/timeout) |
+| `save_note` | Persist project notes |
+| `recall_notes` | Query saved notes |
+| `list_note_categories` | Show note categories with counts |
+| `search_code` | Search indexed code symbols |
+| `index_directory` | Build/refresh tree-sitter code index |
+
+## Development
+
+```bash
+go test ./...
+go build -o teaforge ./cmd/teaforge
+```
+
+## Releases and Changelog
+
+TeaForge uses Semantic Versioning (`vMAJOR.MINOR.PATCH`) and Release Please.
+
+### Commit Convention
+
+Use Conventional Commits:
+
+- `feat:` -> minor release
+- `fix:` / `perf:` -> patch release
+- `BREAKING CHANGE:` -> major release
+
+### Automated Release Flow
+
+1. Push to `main`.
+2. `Release Please` updates or opens a release PR.
+3. Merge the release PR to create tag + GitHub Release and update `CHANGELOG.md`.
+4. `Release Artifacts` builds archives and uploads release assets + `checksums.txt`.
+
+### If Artifact Upload Does Not Auto-Trigger
+
+Manually dispatch `Release Artifacts` with the release tag (for example `v0.2.0`) from GitHub Actions workflow dispatch.
 
 ## Project Layout
 
-```
-cmd/teaforge/          Entry point
-.github/workflows/     CI, release-please, and artifact publishing workflows
+```text
+cmd/teaforge/          CLI entrypoint
+.github/workflows/     CI, commit lint, release automation
 internal/
-  agent/               Anthropic-style agentic loop + memory-aware tools
-  memory/              Session, project and code memory
-  ollama/              Ollama REST API client (streaming chat)
-  tools/               Built-in tools (file I/O, command runner)
-  treesitter/          Tree-sitter code index (code memory)
-  tui/                 Bubble Tea TUI
-    styles/            Visual styling constants
-    views/             Chat, Files and Memory view components
-  prompt/templates/    Embedded prompt templates used by source-driven pipeline
+  agent/               Agent loop and memory-aware tools
+  buildinfo/           Build/version metadata exposed by --version
+  memory/              Session and project memory
+  ollama/              Ollama API client
+  prompt/              Prompt pipeline and guardrails
+    templates/         Embedded prompt/template files
+  tools/               Core built-in tools
+  treesitter/          Code index and symbol extraction
+  tui/                 Bubble Tea application and views
 ```
 
 ## License
