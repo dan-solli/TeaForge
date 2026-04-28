@@ -10,7 +10,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"time"
+	"strconv"
+	"strings"
 )
 
 const defaultBaseURL = "http://localhost:11434"
@@ -104,6 +105,16 @@ type ModelListResponse struct {
 	Models []ModelInfo `json:"models"`
 }
 
+// showModelRequest is sent to /api/show.
+type showModelRequest struct {
+	Model string `json:"model"`
+}
+
+// showModelResponse contains a subset of /api/show fields.
+type showModelResponse struct {
+	ModelInfo map[string]any `json:"model_info"`
+}
+
 // Client is an Ollama API client.
 type Client struct {
 	baseURL    string
@@ -118,9 +129,10 @@ func NewClient(baseURL string) *Client {
 	}
 	return &Client{
 		baseURL: baseURL,
-		httpClient: &http.Client{
-			Timeout: 5 * time.Minute,
-		},
+		// Do not set a global timeout here. Streaming chat requests can
+		// legitimately run for a long time; call sites should control
+		// deadlines via context.WithTimeout when needed.
+		httpClient: &http.Client{},
 	}
 }
 
@@ -143,6 +155,42 @@ func (c *Client) ListModels(ctx context.Context) ([]ModelInfo, error) {
 		return nil, fmt.Errorf("decoding response: %w", err)
 	}
 	return result.Models, nil
+}
+
+// ModelContextLength returns the model's supported context length from /api/show.
+func (c *Client) ModelContextLength(ctx context.Context, model string) (int, error) {
+	if strings.TrimSpace(model) == "" {
+		return 0, fmt.Errorf("model is required")
+	}
+	payload, err := json.Marshal(showModelRequest{Model: model})
+	if err != nil {
+		return 0, fmt.Errorf("marshalling request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/show", bytes.NewReader(payload))
+	if err != nil {
+		return 0, fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("show model: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return 0, fmt.Errorf("unexpected status %s: %s", resp.Status, string(b))
+	}
+
+	var out showModelResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return 0, fmt.Errorf("decoding response: %w", err)
+	}
+	ctxLen, ok := findContextLength(out.ModelInfo)
+	if !ok || ctxLen <= 0 {
+		return 0, fmt.Errorf("context length not found in model_info")
+	}
+	return ctxLen, nil
 }
 
 // ChatStream sends a chat request to Ollama and streams back response chunks.
@@ -170,6 +218,9 @@ func (c *Client) ChatStream(ctx context.Context, req ChatRequest, onChunk func(C
 		return fmt.Errorf("unexpected status %s: %s", resp.Status, string(b))
 	}
 	scanner := bufio.NewScanner(resp.Body)
+	// Default scanner token size is 64K, which can be too small for some
+	// streamed JSON chunks. Raise the cap to avoid premature scan failures.
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -215,4 +266,55 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 		return nil, fmt.Errorf("decoding response: %w", err)
 	}
 	return &result, nil
+}
+
+func findContextLength(modelInfo map[string]any) (int, bool) {
+	if len(modelInfo) == 0 {
+		return 0, false
+	}
+
+	best := 0
+	for k, v := range modelInfo {
+		if k != "context_length" && !strings.HasSuffix(k, ".context_length") {
+			continue
+		}
+		n, ok := anyToInt(v)
+		if !ok || n <= 0 {
+			continue
+		}
+		if n > best {
+			best = n
+		}
+	}
+	if best <= 0 {
+		return 0, false
+	}
+	return best, true
+}
+
+func anyToInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int32:
+		return int(n), true
+	case int64:
+		return int(n), true
+	case float64:
+		return int(n), true
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return int(i), true
+	case string:
+		i, err := strconv.Atoi(strings.TrimSpace(n))
+		if err != nil {
+			return 0, false
+		}
+		return i, true
+	default:
+		return 0, false
+	}
 }

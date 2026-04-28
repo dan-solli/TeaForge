@@ -68,14 +68,21 @@ ollama pull gemma4:26b
 |---|---|---|
 | `TEAFORGE_MODEL` | Ollama model name | `gemma4:26b` |
 | `OLLAMA_HOST` | Ollama base URL | `http://localhost:11434` |
-| `TEAFORGE_NUM_CTX` | Context token budget | `8192` |
+| `TEAFORGE_NUM_CTX` | Override model context length | auto-detected from Ollama model metadata |
+| `TEAFORGE_CTX_USAGE_PERCENT` | Percent of context used for prompt assembly | `80` |
+
+Notes:
+
+- If `TEAFORGE_NUM_CTX` is unset, TeaForge queries Ollama for the active model context length.
+- TeaForge uses only a percentage of that context for prompt assembly (default 80%) to preserve headroom for model output and tool-call responses.
 
 Examples:
 
 ```bash
 TEAFORGE_MODEL=qwen2.5-coder:14b ./teaforge
 OLLAMA_HOST=http://192.168.1.100:11434 ./teaforge
-TEAFORGE_NUM_CTX=16384 ./teaforge
+TEAFORGE_NUM_CTX=262144 ./teaforge
+TEAFORGE_CTX_USAGE_PERCENT=75 ./teaforge
 ```
 
 ## TUI Workflow

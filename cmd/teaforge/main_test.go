@@ -25,10 +25,12 @@ func restoreMainDeps() func() {
 	origNewAgent := newAgent
 	origGetwd := getwd
 	origNewProgram := newProgram
+	origDetectModelContextLength := detectModelContextLength
 	return func() {
 		newAgent = origNewAgent
 		getwd = origGetwd
 		newProgram = origNewProgram
+		detectModelContextLength = origDetectModelContextLength
 	}
 }
 
@@ -56,16 +58,51 @@ func TestOllamaURLFromEnv(t *testing.T) {
 
 func TestNumCtxFromEnv(t *testing.T) {
 	t.Setenv("TEAFORGE_NUM_CTX", "")
-	if got := numCtxFromEnv(); got != 8192 {
+	if got := numCtxFromEnv(); got != 262144 {
 		t.Fatalf("default num_ctx=%d", got)
 	}
 	t.Setenv("TEAFORGE_NUM_CTX", "invalid")
-	if got := numCtxFromEnv(); got != 8192 {
+	if got := numCtxFromEnv(); got != 262144 {
 		t.Fatalf("invalid num_ctx should default, got=%d", got)
 	}
 	t.Setenv("TEAFORGE_NUM_CTX", "16384")
 	if got := numCtxFromEnv(); got != 16384 {
 		t.Fatalf("num_ctx=%d", got)
+	}
+}
+
+func TestModelContextFromEnvOrDetect(t *testing.T) {
+	restore := restoreMainDeps()
+	defer restore()
+
+	t.Setenv("TEAFORGE_NUM_CTX", "")
+	detectModelContextLength = func(ollamaURL, model string) (int, error) {
+		return 131072, nil
+	}
+	if got := modelContextFromEnvOrDetect("gemma4:26b", "http://localhost:11434"); got != 131072 {
+		t.Fatalf("detected context=%d", got)
+	}
+
+	t.Setenv("TEAFORGE_NUM_CTX", "65536")
+	if got := modelContextFromEnvOrDetect("gemma4:26b", "http://localhost:11434"); got != 65536 {
+		t.Fatalf("env override context=%d", got)
+	}
+}
+
+func TestUsablePromptBudget(t *testing.T) {
+	t.Setenv("TEAFORGE_CTX_USAGE_PERCENT", "")
+	if got := usablePromptBudget(262144); got != 209715 {
+		t.Fatalf("usable default=%d", got)
+	}
+
+	t.Setenv("TEAFORGE_CTX_USAGE_PERCENT", "75")
+	if got := usablePromptBudget(100000); got != 75000 {
+		t.Fatalf("usable 75%%=%d", got)
+	}
+
+	t.Setenv("TEAFORGE_CTX_USAGE_PERCENT", "invalid")
+	if got := usablePromptBudget(100000); got != 80000 {
+		t.Fatalf("invalid pct fallback=%d", got)
 	}
 }
 

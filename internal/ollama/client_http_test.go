@@ -16,6 +16,12 @@ func TestNewClient_DefaultBaseURL(t *testing.T) {
 	if c.baseURL != defaultBaseURL {
 		t.Fatalf("baseURL=%q want %q", c.baseURL, defaultBaseURL)
 	}
+	if c.httpClient == nil {
+		t.Fatal("httpClient should be initialized")
+	}
+	if c.httpClient.Timeout != 0 {
+		t.Fatalf("default http timeout=%v want 0 (no global timeout)", c.httpClient.Timeout)
+	}
 }
 
 func TestListModels_Success(t *testing.T) {
@@ -66,6 +72,57 @@ func TestListModels_DecodeError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected decode error")
 	}
+}
+
+func TestModelContextLength_Success(t *testing.T) {
+	t.Parallel()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/show" {
+			t.Fatalf("path=%q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model_info":{"gemma4.context_length":262144}}`))
+	}))
+	defer ts.Close()
+
+	c := NewClient(ts.URL)
+	ctxLen, err := c.ModelContextLength(context.Background(), "gemma4:26b")
+	if err != nil {
+		t.Fatalf("ModelContextLength: %v", err)
+	}
+	if ctxLen != 262144 {
+		t.Fatalf("context_length=%d want 262144", ctxLen)
+	}
+}
+
+func TestModelContextLength_StatusAndMissing(t *testing.T) {
+	t.Parallel()
+	t.Run("status error", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "bad", http.StatusBadRequest)
+		}))
+		defer ts.Close()
+
+		c := NewClient(ts.URL)
+		_, err := c.ModelContextLength(context.Background(), "m")
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprint(http.StatusBadRequest)) {
+			t.Fatalf("unexpected err: %v", err)
+		}
+	})
+
+	t.Run("missing context", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"model_info":{"foo":1}}`))
+		}))
+		defer ts.Close()
+
+		c := NewClient(ts.URL)
+		_, err := c.ModelContextLength(context.Background(), "m")
+		if err == nil {
+			t.Fatal("expected missing-context error")
+		}
+	})
 }
 
 func TestChatStream_Success(t *testing.T) {

@@ -129,4 +129,12 @@ func TestCompactorHelpers(t *testing.T) {
 	if !strings.Contains(fallback, "additional turns omitted") {
 		t.Fatalf("fallback=%q", fallback)
 	}
+
+	sections := splitTurnsIntoSections(makeTurns(55, "z"), 20)
+	if len(sections) != 3 {
+		t.Fatalf("sections=%d want 3", len(sections))
+	}
+	if len(sections[0]) != 20 || len(sections[1]) != 20 || len(sections[2]) != 15 {
+		t.Fatalf("unexpected section sizes: %d %d %d", len(sections[0]), len(sections[1]), len(sections[2]))
+	}
 }
