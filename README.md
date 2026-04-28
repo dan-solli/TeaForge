@@ -59,6 +59,12 @@ cd TeaForge
 go build -o teaforge ./cmd/teaforge
 ```
 
+Prebuilt binaries are published on GitHub Releases for:
+
+- macOS (`arm64`, `amd64`)
+- Linux (`amd64`, `arm64`)
+- Windows (`amd64`)
+
 ## Running
 
 ```bash
@@ -70,7 +76,34 @@ TEAFORGE_MODEL=codellama ./teaforge
 
 # Point at a remote Ollama instance
 OLLAMA_HOST=http://192.168.1.100:11434 ./teaforge
+
+# Print build/version metadata
+./teaforge --version
 ```
+
+## Versioning, Changelog and Releases
+
+TeaForge uses **Semantic Versioning** (`vMAJOR.MINOR.PATCH`) and automated release management.
+
+### Commit Format
+
+Use Conventional Commits where possible:
+
+- `feat:` for features (minor bump)
+- `fix:` for bug fixes (patch bump)
+- `perf:` for performance fixes (patch bump)
+- `BREAKING CHANGE:` in body/footer (major bump)
+
+### Automated Flow
+
+1. Push commits to `main`.
+2. The **Release Please** workflow opens/updates a release PR with the next SemVer version and `CHANGELOG.md` updates.
+3. Merging the release PR creates a Git tag and GitHub Release.
+4. The **Release Artifacts** workflow builds platform binaries, packages them, and uploads assets plus `checksums.txt`.
+
+### Manual Build of Release Artifacts
+
+You can manually trigger the `Release Artifacts` workflow with a tag (for example `v1.2.3`) using the workflow dispatch input.
 
 ## Key Bindings
 
@@ -90,6 +123,7 @@ OLLAMA_HOST=http://192.168.1.100:11434 ./teaforge
 
 ```
 cmd/teaforge/          Entry point
+.github/workflows/     CI, release-please, and artifact publishing workflows
 internal/
   agent/               Anthropic-style agentic loop + memory-aware tools
   memory/              Session, project and code memory

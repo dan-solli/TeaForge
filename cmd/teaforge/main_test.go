@@ -111,8 +111,9 @@ func TestRun_Success(t *testing.T) {
 	getwd = func() (string, error) { return wd, nil }
 	newProgram = func(app tui.App) teaProgram { return fakeProgram{} }
 
+	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if code := run(nil, &stderr); code != 0 {
+	if code := run(nil, &stdout, &stderr); code != 0 {
 		t.Fatalf("run code=%d stderr=%q", code, stderr.String())
 	}
 }
@@ -121,11 +122,29 @@ func TestRun_ParseError(t *testing.T) {
 	restore := restoreMainDeps()
 	defer restore()
 
+	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if code := run([]string{"--unknown"}, &stderr); code != 2 {
+	if code := run([]string{"--unknown"}, &stdout, &stderr); code != 2 {
 		t.Fatalf("run code=%d want 2", code)
 	}
 	if !strings.Contains(stderr.String(), "flag provided") {
+		t.Fatalf("stderr=%q", stderr.String())
+	}
+}
+
+func TestRun_VersionFlag(t *testing.T) {
+	restore := restoreMainDeps()
+	defer restore()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if code := run([]string{"--version"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run code=%d want 0", code)
+	}
+	if !strings.Contains(stdout.String(), "teaforge") {
+		t.Fatalf("stdout=%q", stdout.String())
+	}
+	if stderr.Len() != 0 {
 		t.Fatalf("stderr=%q", stderr.String())
 	}
 }
@@ -138,8 +157,9 @@ func TestRun_MutuallyExclusiveResumeFlags(t *testing.T) {
 	getwd = func() (string, error) { return wd, nil }
 	newProgram = func(app tui.App) teaProgram { return fakeProgram{} }
 
+	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	code := run([]string{"--resume", "x", "--resume-latest"}, &stderr)
+	code := run([]string{"--resume", "x", "--resume-latest"}, &stdout, &stderr)
 	if code != 1 {
 		t.Fatalf("run code=%d want 1", code)
 	}
@@ -158,8 +178,9 @@ func TestRun_AgentInitError(t *testing.T) {
 		return nil, errors.New("init failed")
 	}
 
+	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if code := run(nil, &stderr); code != 1 {
+	if code := run(nil, &stdout, &stderr); code != 1 {
 		t.Fatalf("run code=%d want 1", code)
 	}
 	if !strings.Contains(stderr.String(), "failed to initialise agent") {
@@ -175,8 +196,9 @@ func TestRun_ProgramError(t *testing.T) {
 	getwd = func() (string, error) { return wd, nil }
 	newProgram = func(app tui.App) teaProgram { return fakeProgram{err: errors.New("boom")} }
 
+	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if code := run(nil, &stderr); code != 1 {
+	if code := run(nil, &stdout, &stderr); code != 1 {
 		t.Fatalf("run code=%d want 1", code)
 	}
 	if !strings.Contains(stderr.String(), "boom") {
@@ -202,8 +224,9 @@ func TestRun_ResumeLatestSuccess(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
+	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if code := run([]string{"--resume-latest"}, &stderr); code != 0 {
+	if code := run([]string{"--resume-latest"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("run code=%d stderr=%q", code, stderr.String())
 	}
 }

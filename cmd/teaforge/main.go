@@ -17,6 +17,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/dan-solli/teaforge/internal/agent"
+	"github.com/dan-solli/teaforge/internal/buildinfo"
 	"github.com/dan-solli/teaforge/internal/tui"
 )
 
@@ -35,17 +36,22 @@ var newProgram = func(app tui.App) teaProgram {
 }
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stderr))
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-func run(args []string, stderr io.Writer) int {
+func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	fs := flag.NewFlagSet("teaforge", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	resumeID := fs.String("resume", "", "Resume a prior session by ID (filename without .json)")
 	resumeLatest := fs.Bool("resume-latest", false, "Resume the most recent session")
+	showVersion := fs.Bool("version", false, "Print version information and exit")
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintf(stderr, "teaforge: %v\n", err)
 		return 2
+	}
+	if *showVersion {
+		fmt.Fprintln(stdout, buildinfo.String())
+		return 0
 	}
 
 	// Determine working directory
