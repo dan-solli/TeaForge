@@ -8,6 +8,7 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -446,10 +447,22 @@ func fingerprintToolCalls(calls []ollama.ToolCall) string {
 	if len(calls) == 0 {
 		return ""
 	}
-	parts := make([]string, 0, len(calls))
-	for _, tc := range calls {
-		args, _ := json.Marshal(tc.Function.Arguments)
-		parts = append(parts, tc.Function.Name+":"+string(args))
+	// Sort a copy by name so the same set of calls in any order produces the same fingerprint.
+	sorted := make([]ollama.ToolCall, len(calls))
+	copy(sorted, calls)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].Function.Name < sorted[j].Function.Name
+	})
+	h := sha256.New()
+	for _, tc := range sorted {
+		args, err := json.Marshal(tc.Function.Arguments)
+		if err != nil {
+			args = []byte("<unmarshalable>")
+		}
+		h.Write([]byte(tc.Function.Name))
+		h.Write([]byte(":"))
+		h.Write(args)
+		h.Write([]byte("|"))
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
