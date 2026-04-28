@@ -349,7 +349,7 @@ func (a App) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case key.Matches(msg, a.keys.Up):
+	case a.activeView != viewChat && key.Matches(msg, a.keys.Up):
 		switch a.activeView {
 		case viewFiles:
 			a.filesView.MoveUp()
@@ -361,7 +361,7 @@ func (a App) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case key.Matches(msg, a.keys.Down):
+	case a.activeView != viewChat && key.Matches(msg, a.keys.Down):
 		switch a.activeView {
 		case viewFiles:
 			a.filesView.MoveDown()

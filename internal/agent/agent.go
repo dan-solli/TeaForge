@@ -37,15 +37,21 @@ type Event struct {
 	Content string // Token text, tool name, tool result, or error message
 }
 
+const (
+	PromptPipelineExperimental = "experimental"
+	PromptPipelineLegacy       = "legacy"
+)
+
 // Config holds the configuration for an Agent instance.
 type Config struct {
-	Model        string
-	OllamaURL    string
-	WorkDir      string
-	MemoryFile   string // Path to project memory JSON file
-	SessionsDir  string // Directory for session logs; empty disables logging
-	SystemPrompt string
-	NumCtx       int
+	Model          string
+	OllamaURL      string
+	WorkDir        string
+	MemoryFile     string // Path to project memory JSON file
+	SessionsDir    string // Directory for session logs; empty disables logging
+	SystemPrompt   string
+	NumCtx         int
+	PromptPipeline string // "experimental" (default) or "legacy"
 }
 
 // Agent is the central orchestrator: it manages memory, tools and the LLM loop.
@@ -91,9 +97,22 @@ func New(cfg Config) (*Agent, error) {
 		tools:      registry,
 		sessionLog: sl,
 	}
-	a.pipeline = prompt.NewDefaultPipeline([]prompt.Guardrail{
-		guardrails.NewSnapshotGuardrail(a.AppendSessionLog),
-	})
+	pipelineMode := strings.ToLower(strings.TrimSpace(cfg.PromptPipeline))
+	if pipelineMode == "" {
+		pipelineMode = PromptPipelineExperimental
+	}
+	a.cfg.PromptPipeline = pipelineMode
+
+	switch pipelineMode {
+	case PromptPipelineExperimental:
+		a.pipeline = prompt.NewDefaultPipeline([]prompt.Guardrail{
+			guardrails.NewSnapshotGuardrail(a.AppendSessionLog),
+		})
+	case PromptPipelineLegacy:
+		a.pipeline = prompt.NewLegacyPipeline()
+	default:
+		return nil, fmt.Errorf("unknown prompt pipeline mode: %q", cfg.PromptPipeline)
+	}
 	a.pipeline.SetTokenBudget(cfg.NumCtx)
 	a.pipeline.SetCompactor(newLLMCompactor(client, cfg.Model, cfg.NumCtx))
 	// Register memory-aware tools

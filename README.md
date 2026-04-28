@@ -70,7 +70,15 @@ TEAFORGE_MODEL=codellama ./teaforge
 
 # Point at a remote Ollama instance
 OLLAMA_HOST=http://192.168.1.100:11434 ./teaforge
+
+# Select prompt pipeline mode (default: experimental)
+TEAFORGE_PROMPT_PIPELINE=experimental ./teaforge
 ```
+
+### Prompt Pipeline Modes
+
+- `experimental` (default): source-driven pipeline with AGENTS.md, environment context, attachments, budgeting and compaction.
+- `legacy`: minimal compatibility pipeline (system prompt + unfiltered project notes + code index summary).
 
 ## Key Bindings
 

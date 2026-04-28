@@ -60,12 +60,13 @@ func run(args []string, stderr io.Writer) int {
 
 	// Build agent configuration
 	cfg := agent.Config{
-		Model:       modelFromEnv(),
-		OllamaURL:   ollamaURLFromEnv(),
-		WorkDir:     workDir,
-		MemoryFile:  memoryFile,
-		SessionsDir: sessionsDir,
-		NumCtx:      numCtxFromEnv(),
+		Model:          modelFromEnv(),
+		OllamaURL:      ollamaURLFromEnv(),
+		WorkDir:        workDir,
+		MemoryFile:     memoryFile,
+		SessionsDir:    sessionsDir,
+		NumCtx:         numCtxFromEnv(),
+		PromptPipeline: promptPipelineFromEnv(),
 	}
 
 	// Create the agent
@@ -132,6 +133,16 @@ func numCtxFromEnv() int {
 		return 8192
 	}
 	return n
+}
+
+// promptPipelineFromEnv selects the prompt pipeline mode.
+// Supported values: "experimental" (default) and "legacy".
+func promptPipelineFromEnv() string {
+	raw := strings.TrimSpace(os.Getenv("TEAFORGE_PROMPT_PIPELINE"))
+	if raw == "" {
+		return agent.PromptPipelineExperimental
+	}
+	return strings.ToLower(raw)
 }
 
 func resolveResumePath(sessionsDir, id string, latest bool) (string, error) {

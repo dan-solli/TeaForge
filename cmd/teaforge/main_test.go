@@ -69,6 +69,18 @@ func TestNumCtxFromEnv(t *testing.T) {
 	}
 }
 
+func TestPromptPipelineFromEnv(t *testing.T) {
+	t.Setenv("TEAFORGE_PROMPT_PIPELINE", "")
+	if got := promptPipelineFromEnv(); got != agent.PromptPipelineExperimental {
+		t.Fatalf("default pipeline=%q", got)
+	}
+
+	t.Setenv("TEAFORGE_PROMPT_PIPELINE", "LEGACY")
+	if got := promptPipelineFromEnv(); got != agent.PromptPipelineLegacy {
+		t.Fatalf("pipeline=%q", got)
+	}
+}
+
 func TestResolveResumePath_ByID(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
